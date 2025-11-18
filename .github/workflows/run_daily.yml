@@ -38,7 +38,7 @@ jobs:
         run: |
           if git diff --quiet seen_tenders.json; then
             echo "No changes to seen_tenders.json"
-          else:
+          else
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
             git add seen_tenders.json
