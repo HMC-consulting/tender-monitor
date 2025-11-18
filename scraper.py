@@ -233,30 +233,84 @@ def scrape_world_bank():
 
 
 # ------------------------------------------------------
-# Email builder
+# Build Email (HTML + Text versions)
 # ------------------------------------------------------
-def build_email_body(tenders_with_source):
+def build_email_bodies(tenders_with_source):
+    # ------------------------
+    # Plain text fallback
+    # ------------------------
     if not tenders_with_source:
-        return "No NEW marine/ocean-related tenders found today."
+        body_text = "No NEW marine/ocean-related tenders found today."
+    else:
+        lines = ["NEW Marine / Ocean Tender & Consultancy Opportunities\n"]
+        current_source = None
+        for source, t in tenders_with_source:
+            if source != current_source:
+                lines.append(f"\n{source}")
+                lines.append("-" * len(source))
+                current_source = source
 
-    lines = ["🌊 NEW Marine / Ocean Tender & Consultancy Opportunities", ""]
+            lines.append(f"- {t['title']}")
+            lines.append(f"  {t['url']}")
+            if t["tier1"]:
+                lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
+            if t["tier2"]:
+                lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
+        body_text = "\n".join(lines)
+
+    # ------------------------
+    # HTML version
+    # ------------------------
+    if not tenders_with_source:
+        body_html = """
+        <html><body>
+        <h2 style="color:#004080;">No NEW marine/ocean-related tenders found today.</h2>
+        </body></html>
+        """
+        return body_html, body_text
+
+    html = []
+    html.append("""
+    <html>
+    <body style="font-family:Arial, sans-serif; font-size:14px; color:#333;">
+    <h2 style="color:#004080;">🌊 New Marine / Ocean Tender & Consultancy Opportunities</h2>
+    """)
 
     current_source = None
     for source, t in tenders_with_source:
         if source != current_source:
-            lines.append(f"📌 {source}")
-            lines.append("-" * (4 + len(source)))
+            html.append(f"""
+                <h3 style="color:#0066aa; margin-top:25px;">{source}</h3>
+                <hr style="border:0; border-top:1px solid #ccc; margin-bottom:10px;">
+            """)
             current_source = source
 
-        lines.append(f"• {t['title']}")
-        lines.append(f"  ➤ {t['url']}")
-        if t["tier1"]:
-            lines.append(f"  🔹 tier 1: {', '.join(t['tier1'])}")
-        if t["tier2"]:
-            lines.append(f"  🔸 tier 2: {', '.join(t['tier2'])}")
-        lines.append("")
+        html.append(f"""
+            <div style="margin-bottom:15px;">
+                <strong>{t['title']}</strong><br>
+                <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a><br>
+        """)
 
-    return "\n".join(lines)
+        if t["tier1"]:
+            html.append(f"""
+                <span style="color:#006600; font-size:12px;">
+                    <strong>Tier 1:</strong> {', '.join(t['tier1'])}
+                </span><br>
+            """)
+
+        if t["tier2"]:
+            html.append(f"""
+                <span style="color:#555; font-size:12px;">
+                    <strong>Tier 2:</strong> {', '.join(t['tier2'])}
+                </span><br>
+            """)
+
+        html.append("</div>")
+
+    html.append("</body></html>")
+
+    body_html = "".join(html)
+    return body_html, body_text
 
 
 # ------------------------------------------------------
