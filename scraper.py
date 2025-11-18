@@ -76,7 +76,7 @@ def fetch(url: str) -> str | None:
 
 
 # ------------------------------------------------------
-# UNDP CONSULTANCIES (jobs.undp.org)
+# SCRAPER: UNDP Consultancies (jobs.undp.org)
 # ------------------------------------------------------
 def scrape_undp_consultancies():
     base_url = "https://jobs.undp.org"
@@ -115,7 +115,7 @@ def scrape_undp_consultancies():
 
 
 # ------------------------------------------------------
-# UNDP PROCUREMENT NOTICES (procurement-notices.undp.org)
+# SCRAPER: UNDP Procurement Notices
 # ------------------------------------------------------
 def scrape_undp_procurement():
     base_url = "https://procurement-notices.undp.org"
@@ -154,7 +154,7 @@ def scrape_undp_procurement():
 
 
 # ------------------------------------------------------
-# RELIEFWEB
+# SCRAPER: ReliefWeb (marine-filtered)
 # ------------------------------------------------------
 def scrape_reliefweb():
     base_url = "https://reliefweb.int"
@@ -194,7 +194,7 @@ def scrape_reliefweb():
 
 
 # ------------------------------------------------------
-# WORLD BANK EPROCURE
+# SCRAPER: World Bank eProcure
 # ------------------------------------------------------
 def scrape_world_bank():
     base_url = "https://wbgeprocure-rfxnow.worldbank.org"
@@ -233,35 +233,11 @@ def scrape_world_bank():
 
 
 # ------------------------------------------------------
-# Build Email (HTML + Text versions)
+# Build Email (HTML + Text)
 # ------------------------------------------------------
 def build_email_bodies(tenders_with_source):
-    # ------------------------
-    # Plain text fallback
-    # ------------------------
     if not tenders_with_source:
         body_text = "No NEW marine/ocean-related tenders found today."
-    else:
-        lines = ["NEW Marine / Ocean Tender & Consultancy Opportunities\n"]
-        current_source = None
-        for source, t in tenders_with_source:
-            if source != current_source:
-                lines.append(f"\n{source}")
-                lines.append("-" * len(source))
-                current_source = source
-
-            lines.append(f"- {t['title']}")
-            lines.append(f"  {t['url']}")
-            if t["tier1"]:
-                lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
-            if t["tier2"]:
-                lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
-        body_text = "\n".join(lines)
-
-    # ------------------------
-    # HTML version
-    # ------------------------
-    if not tenders_with_source:
         body_html = """
         <html><body>
         <h2 style="color:#004080;">No NEW marine/ocean-related tenders found today.</h2>
@@ -269,10 +245,28 @@ def build_email_bodies(tenders_with_source):
         """
         return body_html, body_text
 
+    # ---- TEXT VERSION ----
+    lines = ["NEW Marine / Ocean Tender & Consultancy Opportunities\n"]
+    current_source = None
+    for source, t in tenders_with_source:
+        if source != current_source:
+            lines.append(f"\n{source}")
+            lines.append("-" * len(source))
+            current_source = source
+
+        lines.append(f"- {t['title']}")
+        lines.append(f"  {t['url']}")
+        if t["tier1"]:
+            lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
+        if t["tier2"]:
+            lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
+
+    body_text = "\n".join(lines)
+
+    # ---- HTML VERSION ----
     html = []
     html.append("""
-    <html>
-    <body style="font-family:Arial, sans-serif; font-size:14px; color:#333;">
+    <html><body style="font-family:Arial; font-size:14px; color:#333;">
     <h2 style="color:#004080;">🌊 New Marine / Ocean Tender & Consultancy Opportunities</h2>
     """)
 
@@ -281,40 +275,36 @@ def build_email_bodies(tenders_with_source):
         if source != current_source:
             html.append(f"""
                 <h3 style="color:#0066aa; margin-top:25px;">{source}</h3>
-                <hr style="border:0; border-top:1px solid #ccc; margin-bottom:10px;">
+                <hr style="border:0; border-top:1px solid #ccc;">
             """)
             current_source = source
 
         html.append(f"""
-            <div style="margin-bottom:15px;">
+            <p style="margin-bottom:10px;">
                 <strong>{t['title']}</strong><br>
                 <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a><br>
         """)
 
         if t["tier1"]:
             html.append(f"""
-                <span style="color:#006600; font-size:12px;">
-                    <strong>Tier 1:</strong> {', '.join(t['tier1'])}
-                </span><br>
+                <span style="color:#006600; font-size:12px;"><strong>Tier 1:</strong> {', '.join(t['tier1'])}</span><br>
             """)
 
         if t["tier2"]:
             html.append(f"""
-                <span style="color:#555; font-size:12px;">
-                    <strong>Tier 2:</strong> {', '.join(t['tier2'])}
-                </span><br>
+                <span style="color:#555; font-size:12px;"><strong>Tier 2:</strong> {', '.join(t['tier2'])}</span><br>
             """)
 
-        html.append("</div>")
+        html.append("</p>")
 
     html.append("</body></html>")
-
     body_html = "".join(html)
+
     return body_html, body_text
 
 
 # ------------------------------------------------------
-# Main
+# MAIN
 # ------------------------------------------------------
 def main():
     config = load_config()
@@ -332,28 +322,33 @@ def main():
         ("World Bank eProcure", scrape_world_bank),
     ]
 
-    for source_name, func in sources:
+    for source_name, scraper in sources:
         try:
-            tenders = func()
+            tenders = scraper()
         except Exception as e:
             print(f"❌ Error scraping {source_name}: {e}")
             tenders = []
-
         for t in tenders:
             if t["id"] not in seen:
                 results.append((source_name, t))
                 updated_seen.add(t["id"])
 
-    email_body = build_email_body(results)
+    # Build HTML + plain text email bodies
+    body_html, body_text = build_email_bodies(results)
 
+    # Load Gmail token
     creds = Credentials.from_authorized_user_file("token.json")
+
+    # Send
     send_email(
         subject="Daily Marine / Ocean Tender Report",
-        body=email_body,
+        body_html=body_html,
+        body_text=body_text,
         creds=creds,
-        email_to=email_to,
+        email_to=email_to
     )
 
+    # Save updated history
     save_seen(updated_seen)
 
 
