@@ -11,7 +11,7 @@ from keywords import TIER1_KEYWORDS, TIER2_KEYWORDS
 
 
 # ------------------------------------------------------
-# Config
+# Load config
 # ------------------------------------------------------
 def load_config():
     with open("config.yaml", "r") as f:
@@ -19,44 +19,36 @@ def load_config():
 
 
 # ------------------------------------------------------
-# Duplicate tracking using seen_tenders.json
+# Duplicate tracking
 # ------------------------------------------------------
 SEEN_FILE = "seen_tenders.json"
 
 
 def load_seen():
-    """Load previously seen tender IDs (URLs) from JSON."""
+    """Load previously-seen tender URLs."""
     if os.path.exists(SEEN_FILE):
         try:
             with open(SEEN_FILE, "r") as f:
                 data = json.load(f)
-                if isinstance(data, list):
-                    return set(data)
+                return set(data) if isinstance(data, list) else set()
         except Exception:
-            pass
+            return set()
     return set()
 
 
 def save_seen(seen_ids):
-    """Save updated set of seen tender IDs back to JSON."""
+    """Save updated seen tender IDs."""
     with open(SEEN_FILE, "w") as f:
         json.dump(sorted(list(seen_ids)), f, indent=2)
 
 
 # ------------------------------------------------------
-# Keyword tier-matching
+# Keyword tier matching
 # ------------------------------------------------------
 def match_keywords(text: str):
     """
-    Apply tiered keyword logic.
-
-    Tier 1 (TIER1_KEYWORDS) must match at least once
-    for the tender to be considered relevant.
-
-    Tier 2 (TIER2_KEYWORDS) are optional additional matches.
-
-    Returns:
-        (is_match: bool, tier1_hits: list[str], tier2_hits: list[str])
+    Tier 1 keywords must be present.
+    Tier 2 are optional secondary matches.
     """
     text = text.lower()
 
@@ -69,28 +61,24 @@ def match_keywords(text: str):
 
 
 # ------------------------------------------------------
-# Simple fetch helper
+# Fetch helper
 # ------------------------------------------------------
 def fetch(url: str) -> str | None:
-    """Fetch a URL and return HTML text or None on failure."""
     try:
-        resp = requests.get(url, timeout=25)
+        headers = {"User-Agent": "Mozilla/5.0 (TenderMonitorBot)"}
+        resp = requests.get(url, headers=headers, timeout=30)
         if resp.status_code == 200:
             return resp.text
-        print(f"Fetch failed {url} with status {resp.status_code}")
+        print(f"❌ Fetch failed {url} — status {resp.status_code}")
     except Exception as e:
-        print(f"Error fetching {url}: {e}")
+        print(f"❌ Error fetching {url}: {e}")
     return None
 
 
 # ------------------------------------------------------
-# SCRAPER: UNDP Consultancies (jobs.undp.org)
+# UNDP CONSULTANCIES (jobs.undp.org)
 # ------------------------------------------------------
 def scrape_undp_consultancies():
-    """
-    Scrape UNDP consultancy listings (jobs.undp.org).
-    Uses only the listing titles for now.
-    """
     base_url = "https://jobs.undp.org"
     url = f"{base_url}/cj_view_consultancies.cfm"
 
@@ -99,46 +87,39 @@ def scrape_undp_consultancies():
         return []
 
     soup = BeautifulSoup(html, "html.parser")
-
     tenders = []
 
-    # Look for rows in the main consultancy table
-    rows = soup.find_all("tr")
-    for row in rows:
+    for row in soup.find_all("tr"):
         link = row.find("a", href=True)
         if not link:
             continue
-
         title = link.get_text(strip=True)
-        href = link["href"]
-        full_url = href if href.startswith("http") else urljoin(base_url, href)
-
-        text_to_check = title.lower()
-        is_match, t1, t2 = match_keywords(text_to_check)
-        if not is_match:
+        if not title:
             continue
 
-        tenders.append({
-            "id": full_url,
-            "title": title,
-            "url": full_url,
-            "tier1": t1,
-            "tier2": t2,
-        })
+        full_url = link["href"]
+        if not full_url.startswith("http"):
+            full_url = urljoin(base_url, full_url)
+
+        match, t1, t2 = match_keywords(title)
+        if match:
+            tenders.append({
+                "id": full_url,
+                "title": title,
+                "url": full_url,
+                "tier1": t1,
+                "tier2": t2,
+            })
 
     return tenders
 
 
 # ------------------------------------------------------
-# SCRAPER: UNDP Procurement Notices (procurement-notices.undp.org)
+# UNDP PROCUREMENT NOTICES (procurement-notices.undp.org)
 # ------------------------------------------------------
 def scrape_undp_procurement():
-    """
-    Scrape UNDP Procurement Notices site, including negotiations/notices.
-    This is where things like nego_id=40327 live.
-    """
     base_url = "https://procurement-notices.undp.org"
-    url = f"{base_url}/"
+    url = base_url + "/"
 
     html = fetch(url)
     if not html:
@@ -147,42 +128,35 @@ def scrape_undp_procurement():
     soup = BeautifulSoup(html, "html.parser")
     tenders = []
 
-    # Heuristic: find all links that look like individual notices/negotiations
     for link in soup.find_all("a", href=True):
         href = link["href"]
-        # Focus on individual notice / negotiation pages
-        if "view_notice.cfm" not in href and "view_negotiation.cfm" not in href:
+
+        if not any(key in href for key in ["view_notice", "view_negotiation"]):
             continue
 
         title = link.get_text(strip=True)
-        if not title:
+        if not title or len(title) < 3:
             continue
 
-        full_url = href if href.startswith("http") else urljoin(base_url, href)
+        full_url = urljoin(base_url, href)
 
-        is_match, t1, t2 = match_keywords(title.lower())
-        if not is_match:
-            continue
-
-        tenders.append({
-            "id": full_url,
-            "title": title,
-            "url": full_url,
-            "tier1": t1,
-            "tier2": t2,
-        })
+        match, t1, t2 = match_keywords(title)
+        if match:
+            tenders.append({
+                "id": full_url,
+                "title": title,
+                "url": full_url,
+                "tier1": t1,
+                "tier2": t2,
+            })
 
     return tenders
 
 
 # ------------------------------------------------------
-# SCRAPER: ReliefWeb Jobs (filtered by "marine" search)
+# RELIEFWEB
 # ------------------------------------------------------
 def scrape_reliefweb():
-    """
-    Scrape ReliefWeb jobs page using ?search=marine.
-    This is a heuristic but tends to concentrate relevant roles.
-    """
     base_url = "https://reliefweb.int"
     url = f"{base_url}/jobs?search=marine"
 
@@ -193,41 +167,36 @@ def scrape_reliefweb():
     soup = BeautifulSoup(html, "html.parser")
     tenders = []
 
-    # ReliefWeb job titles usually use this CSS class on <a>
-    title_links = soup.select("a.rw-river-article__title-link")
+    links = soup.select("a.rw-river-article__title-link")
 
-    for link in title_links:
+    for link in links:
         title = link.get_text(strip=True)
+        if not title:
+            continue
+
         href = link.get("href")
-        if not href or not title:
+        if not href:
             continue
 
         full_url = urljoin(base_url, href)
 
-        is_match, t1, t2 = match_keywords(title.lower())
-        if not is_match:
-            continue
-
-        tenders.append({
-            "id": full_url,
-            "title": title,
-            "url": full_url,
-            "tier1": t1,
-            "tier2": t2,
-        })
+        match, t1, t2 = match_keywords(title)
+        if match:
+            tenders.append({
+                "id": full_url,
+                "title": title,
+                "url": full_url,
+                "tier1": t1,
+                "tier2": t2,
+            })
 
     return tenders
 
 
 # ------------------------------------------------------
-# SCRAPER: World Bank eProcure (HTML table heuristic)
+# WORLD BANK EPROCURE
 # ------------------------------------------------------
 def scrape_world_bank():
-    """
-    Scrape World Bank eProcure advertisement listing page.
-    This is HTML-based and may not see everything if JS is involved,
-    but will pick up visible table rows.
-    """
     base_url = "https://wbgeprocure-rfxnow.worldbank.org"
     url = f"{base_url}/rfxnow/public/advertisement/index.html"
 
@@ -238,44 +207,39 @@ def scrape_world_bank():
     soup = BeautifulSoup(html, "html.parser")
     tenders = []
 
-    rows = soup.find_all("tr")
-    for row in rows:
+    for row in soup.find_all("tr"):
         link = row.find("a", href=True)
         if not link:
             continue
 
         title = link.get_text(strip=True)
-        href = link["href"]
-        full_url = href if href.startswith("http") else urljoin(base_url, href)
-
-        is_match, t1, t2 = match_keywords(title.lower())
-        if not is_match:
+        if not title or len(title) < 3:
             continue
 
-        tenders.append({
-            "id": full_url,
-            "title": title,
-            "url": full_url,
-            "tier1": t1,
-            "tier2": t2,
-        })
+        href = link["href"]
+        full_url = urljoin(base_url, href)
+
+        match, t1, t2 = match_keywords(title)
+        if match:
+            tenders.append({
+                "id": full_url,
+                "title": title,
+                "url": full_url,
+                "tier1": t1,
+                "tier2": t2,
+            })
 
     return tenders
 
 
 # ------------------------------------------------------
-# Build Email Body
+# Email builder
 # ------------------------------------------------------
 def build_email_body(tenders_with_source):
-    """
-    tenders_with_source: list of (source_name, tender_dict)
-    """
     if not tenders_with_source:
         return "No NEW marine/ocean-related tenders found today."
 
-    lines = []
-    lines.append("🌊 NEW Marine / Ocean Tender & Consultancy Opportunities")
-    lines.append("")
+    lines = ["🌊 NEW Marine / Ocean Tender & Consultancy Opportunities", ""]
 
     current_source = None
     for source, t in tenders_with_source:
@@ -296,20 +260,17 @@ def build_email_body(tenders_with_source):
 
 
 # ------------------------------------------------------
-# MAIN
+# Main
 # ------------------------------------------------------
 def main():
-    # Load config and email target
     config = load_config()
     email_to = config["email_to"]
 
-    # Load seen tender IDs (URLs)
     seen = load_seen()
     updated_seen = set(seen)
 
-    all_new_tenders = []
+    results = []
 
-    # List of (source_name, scraper_function)
     sources = [
         ("UNDP Consultancies", scrape_undp_consultancies),
         ("UNDP Procurement Notices", scrape_undp_procurement),
@@ -317,26 +278,20 @@ def main():
         ("World Bank eProcure", scrape_world_bank),
     ]
 
-    # Run each scraper
-    for source_name, scraper in sources:
+    for source_name, func in sources:
         try:
-            tenders = scraper()
+            tenders = func()
         except Exception as e:
-            print(f"Error scraping {source_name}: {e}")
+            print(f"❌ Error scraping {source_name}: {e}")
             tenders = []
 
         for t in tenders:
-            tid = t["id"]
-            if tid in seen:
-                continue  # already reported previously
+            if t["id"] not in seen:
+                results.append((source_name, t))
+                updated_seen.add(t["id"])
 
-            all_new_tenders.append((source_name, t))
-            updated_seen.add(tid)
+    email_body = build_email_body(results)
 
-    # Build email content
-    email_body = build_email_body(all_new_tenders)
-
-    # Send email
     creds = Credentials.from_authorized_user_file("token.json")
     send_email(
         subject="Daily Marine / Ocean Tender Report",
@@ -345,7 +300,6 @@ def main():
         email_to=email_to,
     )
 
-    # Save updated seen IDs
     save_seen(updated_seen)
 
 
