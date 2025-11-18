@@ -36,12 +36,13 @@ jobs:
       - name: Commit updated seen_tenders.json
         if: success()
         run: |
-          if git diff --quiet seen_tenders.json; then
-            echo "No changes to seen_tenders.json"
-          else
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add seen_tenders.json
-            git commit -m "Update seen tenders history [skip ci]" || echo "Nothing to commit"
-            git push
-          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Always add the file, even if empty
+          git add seen_tenders.json
+
+          # Commit only if there are actual changes
+          git diff --cached --quiet && echo "No changes to commit" || git commit -m "Update seen tenders history [skip ci]"
+
+          git push || echo "No changes to push"
