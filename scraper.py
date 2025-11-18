@@ -1,10 +1,12 @@
 import yaml
-import re
-from bs4 import BeautifulSoup
-from keywords import KEYWORDS
-from utils import fetch_page
-from emailer import send_email
 from google.oauth2.credentials import Credentials
+
+from keywords import KEYWORDS
+from emailer import send_email
+
+from scrapers.worldbank import scrape_worldbank
+from scrapers.undp import scrape_undp_consultancies
+from scrapers.reliefweb import scrape_reliefweb_jobs
 
 
 def load_config():
@@ -12,128 +14,75 @@ def load_config():
         return yaml.safe_load(f)
 
 
-def extract_links(html, base_url):
+def build_email_body(tenders):
     """
-    Extract all <a href> links from the HTML and return a list of:
-    { "url": full_url, "text": link_text }
+    Build a concise, human-readable email listing real opportunities only.
+    Expected tender dict fields:
+      source, title, url, deadline (optional), summary (optional), matches (list)
     """
-    if not html:
-        return []  # Safety check: skip broken or blocked pages
+    if not tenders:
+        return "No matching tenders or consultancy opportunities found today."
 
-    soup = BeautifulSoup(html, "html.parser")
-    links = []
+    # Group by source
+    by_source = {}
+    for t in tenders:
+        src = t.get("source", "Unknown source")
+        by_source.setdefault(src, []).append(t)
 
-    for a in soup.find_all("a", href=True):
-        href = a["href"].strip()
-        text = a.get_text(" ", strip=True)
+    lines = []
+    lines.append("🌊 Daily Tender & Consultancy Opportunities Report\n")
 
-        # Ignore invisible / empty text
-        if not text:
-            continue
+    for source, items in by_source.items():
+        lines.append(f"\n📌 {source}\n" + "-" * (4 + len(source)))
 
-        # Determine full URL
-        if href.startswith("http"):
-            full_url = href
-        else:
-            full_url = base_url.rstrip("/") + "/" + href.lstrip("/")
+        for t in items:
+            title = t.get("title", "(no title)")
+            url = t.get("url", "")
+            deadline = t.get("deadline")
+            matches = t.get("matches", [])
 
-        # Clean text formatting
-        cleaned_text = re.sub(r"\s+", " ", text)
+            lines.append(f"\n🔹 {title}")
+            if url:
+                lines.append(f"   ➤ {url}")
+            if deadline:
+                lines.append(f"   📅 Deadline: {deadline}")
+            if matches:
+                lines.append(f"   🔍 Matched keywords: {', '.join(matches)}")
 
-        links.append({
-            "url": full_url,
-            "text": cleaned_text
-        })
-
-    return links
-
-
-def keyword_match(text, keywords):
-    """
-    Returns a list of keywords found in the given text (case-insensitive).
-    """
-    text_lower = text.lower()
-    return [kw for kw in keywords if kw.lower() in text_lower]
-
-
-def scan_site_for_tenders(url, keywords):
-    """
-    Fetches the site, extracts links, finds keyword matches, and returns:
-    [
-      { "title": ..., "url": ..., "matches": [...] },
-      ...
-    ]
-    """
-    html = fetch_page(url)
-
-    # If the site failed to load, skip safely
-    if not html:
-        return []
-
-    links = extract_links(html, url)
-    tenders = []
-
-    for link in links:
-        matches = keyword_match(link["text"], keywords)
-
-        if matches:
-            tenders.append({
-                "title": link["text"] or "(no title)",
-                "url": link["url"],
-                "matches": matches
-            })
-
-    return tenders
-
-
-def build_email_body(results):
-    """
-    Creates a clean, readable email summary.
-    """
-    if not results:
-        return "No matching tenders found today."
-
-    body = "🌊 Daily Tender Opportunities Report\n\n"
-
-    for site, tenders in results.items():
-        body += f"📌 Source: {site}\n"
-
-        for t in tenders:
-            body += f"\n🔹 {t['title']}\n"
-            body += f"   ➤ {t['url']}\n"
-            body += f"   🔍 Matched keywords: {', '.join(t['matches'])}\n"
-
-        body += "\n" + ("-" * 50) + "\n\n"
-
-    return body
+    return "\n".join(lines)
 
 
 def main():
-    # Load configuration
+    # Load config for email target
     config = load_config()
     email_to = config["email_to"]
-    sites = config["sites"]
 
-    results = {}
+    all_tenders = []
 
-    # Scan each site
-    for site in sites:
-        tenders = scan_site_for_tenders(site, KEYWORDS)
-        if tenders:
-            results[site] = tenders
+    # 1) World Bank eProcure
+    wb_tenders = scrape_worldbank(KEYWORDS)
+    all_tenders.extend(wb_tenders)
 
-    # Build email report
-    email_body = build_email_body(results)
+    # 2) UNDP Consultancies
+    undp_tenders = scrape_undp_consultancies(KEYWORDS)
+    all_tenders.extend(undp_tenders)
+
+    # 3) ReliefWeb Jobs (marine)
+    reliefweb_tenders = scrape_reliefweb_jobs(KEYWORDS)
+    all_tenders.extend(reliefweb_tenders)
+
+    # Build clean email body
+    email_body = build_email_body(all_tenders)
 
     # Load Gmail credentials
     creds = Credentials.from_authorized_user_file("token.json")
 
     # Send email
     send_email(
-        subject="Daily Tender Report",
+        subject="Daily Tender & Consultancy Report",
         body=email_body,
         creds=creds,
-        email_to=email_to
+        email_to=email_to,
     )
 
 
