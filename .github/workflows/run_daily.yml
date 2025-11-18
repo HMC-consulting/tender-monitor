@@ -5,6 +5,9 @@ on:
     - cron: "0 7 * * *"   # Runs every day at 07:00 UTC
   workflow_dispatch:       # Allows manual runs from the Actions tab
 
+permissions:
+  contents: write
+
 jobs:
   run-tender-scan:
     runs-on: ubuntu-latest
@@ -29,3 +32,16 @@ jobs:
 
       - name: Run the tender scraper
         run: python scraper.py
+
+- name: Commit updated seen_tenders.json
+  if: success()
+  run: |
+    if git diff --quiet seen_tenders.json; then
+      echo "No changes to seen_tenders.json"
+    else
+      git config user.name "github-actions[bot]"
+      git config user.email "github-actions[bot]@users.noreply.github.com"
+      git add seen_tenders.json
+      git commit -m "Update seen tenders history [skip ci]" || echo "Nothing to commit"
+      git push
+    fi
