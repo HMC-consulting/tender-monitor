@@ -27,13 +27,11 @@ TIER1_KEYWORDS = [
 
     # conservation, biodiversity (marine only)
     "marine protected area",
-    "mpa",
     "other effective area-based conservation measure",
     "oecm",
     "marine conservation zones",
     "mczs",
     "special areas of conservation",
-    "sacs",
     "highly protected marine area",
     "hpma",
     "biodiversity beyond national jurisdiction",
@@ -55,7 +53,6 @@ TIER1_KEYWORDS = [
     "small-scale fisheries",
     "artisanal fisheries",
     "ecosystem-based management",
-    "ebm",
     "eafm",
     "iuu",
     "illegal unreported unregulated fishing",
@@ -110,6 +107,7 @@ TIER2_KEYWORDS = [
     "nap",
     "nationally determined contribution",
     "ndc",
+    "nbsap",
 
     # broader fisheries & supply chain
     "fisheries technology",
