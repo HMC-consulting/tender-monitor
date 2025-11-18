@@ -25,7 +25,6 @@ SEEN_FILE = "seen_tenders.json"
 
 
 def load_seen():
-    """Load previously-seen tender URLs."""
     if os.path.exists(SEEN_FILE):
         try:
             with open(SEEN_FILE, "r") as f:
@@ -37,19 +36,14 @@ def load_seen():
 
 
 def save_seen(seen_ids):
-    """Save updated seen tender IDs."""
     with open(SEEN_FILE, "w") as f:
         json.dump(sorted(list(seen_ids)), f, indent=2)
 
 
 # ------------------------------------------------------
-# Keyword tier matching
+# Keyword matching (Tier 1 required)
 # ------------------------------------------------------
 def match_keywords(text: str):
-    """
-    Tier 1 keywords must be present.
-    Tier 2 are optional secondary matches.
-    """
     text = text.lower()
 
     tier1_hits = [kw for kw in TIER1_KEYWORDS if kw in text]
@@ -57,6 +51,7 @@ def match_keywords(text: str):
         return False, [], []
 
     tier2_hits = [kw for kw in TIER2_KEYWORDS if kw in text]
+
     return True, tier1_hits, tier2_hits
 
 
@@ -69,14 +64,13 @@ def fetch(url: str) -> str | None:
         resp = requests.get(url, headers=headers, timeout=30)
         if resp.status_code == 200:
             return resp.text
-        print(f"❌ Fetch failed {url} — status {resp.status_code}")
     except Exception as e:
         print(f"❌ Error fetching {url}: {e}")
     return None
 
 
 # ------------------------------------------------------
-# SCRAPER: UNDP Consultancies (jobs.undp.org)
+# UNDP CONSULTANCIES (jobs.undp.org)
 # ------------------------------------------------------
 def scrape_undp_consultancies():
     base_url = "https://jobs.undp.org"
@@ -93,13 +87,12 @@ def scrape_undp_consultancies():
         link = row.find("a", href=True)
         if not link:
             continue
+
         title = link.get_text(strip=True)
         if not title:
             continue
 
-        full_url = link["href"]
-        if not full_url.startswith("http"):
-            full_url = urljoin(base_url, full_url)
+        full_url = urljoin(base_url, link["href"])
 
         match, t1, t2 = match_keywords(title)
         if match:
@@ -108,14 +101,14 @@ def scrape_undp_consultancies():
                 "title": title,
                 "url": full_url,
                 "tier1": t1,
-                "tier2": t2,
+                "tier2": t2
             })
 
     return tenders
 
 
 # ------------------------------------------------------
-# SCRAPER: UNDP Procurement Notices
+# UNDP PROCUREMENT NOTICES
 # ------------------------------------------------------
 def scrape_undp_procurement():
     base_url = "https://procurement-notices.undp.org"
@@ -131,7 +124,7 @@ def scrape_undp_procurement():
     for link in soup.find_all("a", href=True):
         href = link["href"]
 
-        if not any(key in href for key in ["view_notice", "view_negotiation"]):
+        if "view_notice" not in href and "view_negotiation" not in href:
             continue
 
         title = link.get_text(strip=True)
@@ -147,54 +140,72 @@ def scrape_undp_procurement():
                 "title": title,
                 "url": full_url,
                 "tier1": t1,
-                "tier2": t2,
+                "tier2": t2
             })
 
     return tenders
 
 
 # ------------------------------------------------------
-# SCRAPER: ReliefWeb (marine-filtered)
+# RELIEFWEB — API SEARCH (title + body)
 # ------------------------------------------------------
 def scrape_reliefweb():
-    base_url = "https://reliefweb.int"
-    url = f"{base_url}/jobs?advanced-search=%28TY264%29"
+    api_url = "https://api.reliefweb.int/v1/jobs"
 
-    html = fetch(url)
-    if not html:
+    payload = {
+        "query": {
+            "value": " OR ".join(TIER1_KEYWORDS),
+            "operator": "OR",
+            "fields": ["title", "body"]
+        },
+        "fields": {
+            "include": ["title", "url", "body"]
+        },
+        "limit": 100
+    }
+
+    try:
+        resp = requests.post(api_url, json=payload, timeout=30)
+        if resp.status_code != 200:
+            print(f"❌ ReliefWeb API returned {resp.status_code}")
+            return []
+    except Exception as e:
+        print(f"❌ ReliefWeb API error: {e}")
         return []
 
-    soup = BeautifulSoup(html, "html.parser")
+    data = resp.json()
+    if "data" not in data:
+        return []
+
     tenders = []
 
-    links = soup.select("a.rw-river-article__title-link")
+    for item in data["data"]:
+        fields = item.get("fields", {})
+        title = fields.get("title", "").strip()
+        url = fields.get("url", "").strip()
+        body = fields.get("body", "")
 
-    for link in links:
-        title = link.get_text(strip=True)
-        if not title:
+        if not title or not url:
             continue
 
-        href = link.get("href")
-        if not href:
+        text = (title + " " + body).lower()
+        match, t1, t2 = match_keywords(text)
+        if not match:
             continue
 
-        full_url = urljoin(base_url, href)
-
-        match, t1, t2 = match_keywords(title)
-        if match:
-            tenders.append({
-                "id": full_url,
-                "title": title,
-                "url": full_url,
-                "tier1": t1,
-                "tier2": t2,
-            })
+        tenders.append({
+            "id": url,
+            "title": title,
+            "url": url,
+            "tier1": t1,
+            "tier2": t2
+        })
 
     return tenders
 
 
 # ------------------------------------------------------
-# SCRAPER: World Bank eProcure
+# WORLD BANK
 # ------------------------------------------------------
 def scrape_world_bank():
     base_url = "https://wbgeprocure-rfxnow.worldbank.org"
@@ -213,11 +224,10 @@ def scrape_world_bank():
             continue
 
         title = link.get_text(strip=True)
-        if not title or len(title) < 3:
+        if not title:
             continue
 
-        href = link["href"]
-        full_url = urljoin(base_url, href)
+        full_url = urljoin(base_url, link["href"])
 
         match, t1, t2 = match_keywords(title)
         if match:
@@ -226,29 +236,30 @@ def scrape_world_bank():
                 "title": title,
                 "url": full_url,
                 "tier1": t1,
-                "tier2": t2,
+                "tier2": t2
             })
 
     return tenders
 
 
 # ------------------------------------------------------
-# Build Email (HTML + Text)
+# HTML EMAIL BUILDER
 # ------------------------------------------------------
-def build_email_bodies(tenders_with_source):
-    if not tenders_with_source:
-        body_text = "No NEW marine/ocean-related tenders found today."
-        body_html = """
+def build_email_bodies(items):
+
+    if not items:
+        html = """
         <html><body>
         <h2 style="color:#004080;">No NEW marine/ocean-related tenders found today.</h2>
         </body></html>
         """
-        return body_html, body_text
+        return html, "No NEW marine/ocean-related tenders found today."
 
-    # ---- TEXT VERSION ----
-    lines = ["NEW Marine / Ocean Tender & Consultancy Opportunities\n"]
+    # TEXT VERSION
+    lines = ["NEW Marine / Ocean Tender Opportunities\n"]
     current_source = None
-    for source, t in tenders_with_source:
+
+    for source, t in items:
         if source != current_source:
             lines.append(f"\n{source}")
             lines.append("-" * len(source))
@@ -256,51 +267,35 @@ def build_email_bodies(tenders_with_source):
 
         lines.append(f"- {t['title']}")
         lines.append(f"  {t['url']}")
-        if t["tier1"]:
-            lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
-        if t["tier2"]:
-            lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
-
     body_text = "\n".join(lines)
 
-    # ---- HTML VERSION ----
+    # HTML VERSION
     html = []
     html.append("""
-    <html><body style="font-family:Arial; font-size:14px; color:#333;">
-    <h2 style="color:#004080;">🌊 New Marine / Ocean Tender & Consultancy Opportunities</h2>
+    <html>
+    <body style="font-family:Arial, sans-serif; font-size:14px;">
+    <h2 style="color:#0a4b78;">🌊 New Marine / Ocean Opportunities</h2>
     """)
 
     current_source = None
-    for source, t in tenders_with_source:
+    for source, t in items:
         if source != current_source:
             html.append(f"""
-                <h3 style="color:#0066aa; margin-top:25px;">{source}</h3>
-                <hr style="border:0; border-top:1px solid #ccc;">
+            <h3 style="color:#003d66; margin-top:30px;">{source}</h3>
+            <hr>
             """)
             current_source = source
 
         html.append(f"""
-            <p style="margin-bottom:10px;">
-                <strong>{t['title']}</strong><br>
-                <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a><br>
+        <div style="margin-bottom:20px; padding:10px 0;">
+            <strong style="font-size:15px;">{t['title']}</strong><br>
+            <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a><br>
+        </div>
         """)
 
-        if t["tier1"]:
-            html.append(f"""
-                <span style="color:#006600; font-size:12px;"><strong>Tier 1:</strong> {', '.join(t['tier1'])}</span><br>
-            """)
-
-        if t["tier2"]:
-            html.append(f"""
-                <span style="color:#555; font-size:12px;"><strong>Tier 2:</strong> {', '.join(t['tier2'])}</span><br>
-            """)
-
-        html.append("</p>")
-
     html.append("</body></html>")
-    body_html = "".join(html)
 
-    return body_html, body_text
+    return "".join(html), body_text
 
 
 # ------------------------------------------------------
@@ -312,34 +307,31 @@ def main():
 
     seen = load_seen()
     updated_seen = set(seen)
-
-    results = []
+    new_items = []
 
     sources = [
         ("UNDP Consultancies", scrape_undp_consultancies),
         ("UNDP Procurement Notices", scrape_undp_procurement),
         ("ReliefWeb", scrape_reliefweb),
-        ("World Bank eProcure", scrape_world_bank),
+        ("World Bank eProcure", scrape_world_bank)
     ]
 
-    for source_name, scraper in sources:
+    for source_name, func in sources:
         try:
-            tenders = scraper()
+            tenders = func()
         except Exception as e:
             print(f"❌ Error scraping {source_name}: {e}")
-            tenders = []
+            continue
+
         for t in tenders:
             if t["id"] not in seen:
-                results.append((source_name, t))
+                new_items.append((source_name, t))
                 updated_seen.add(t["id"])
 
-    # Build HTML + plain text email bodies
-    body_html, body_text = build_email_bodies(results)
+    body_html, body_text = build_email_bodies(new_items)
 
-    # Load Gmail token
     creds = Credentials.from_authorized_user_file("token.json")
 
-    # Send
     send_email(
         subject="Daily Marine / Ocean Tender Report",
         body_html=body_html,
@@ -348,7 +340,6 @@ def main():
         email_to=email_to
     )
 
-    # Save updated history
     save_seen(updated_seen)
 
 
