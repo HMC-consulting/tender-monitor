@@ -5,7 +5,7 @@ from keywords import KEYWORDS
 from emailer import send_email
 
 from scrapers.worldbank import scrape_worldbank
-from scrapers.undp import scrape_undp_consultancies
+from scrapers.undp import scrape_undp_consultancies, scrape_undp_procurement_notices
 from scrapers.reliefweb import scrape_reliefweb_jobs
 
 
@@ -63,11 +63,15 @@ def main():
     wb_tenders = scrape_worldbank(KEYWORDS)
     all_tenders.extend(wb_tenders)
 
-    # 2) UNDP Consultancies
-    undp_tenders = scrape_undp_consultancies(KEYWORDS)
-    all_tenders.extend(undp_tenders)
+    # 2) UNDP Consultancies (jobs.undp.org)
+    undp_consult_tenders = scrape_undp_consultancies(KEYWORDS)
+    all_tenders.extend(undp_consult_tenders)
 
-    # 3) ReliefWeb Jobs (marine)
+    # 3) UNDP Procurement Notices (procurement-notices.undp.org)
+    undp_proc_tenders = scrape_undp_procurement_notices(KEYWORDS)
+    all_tenders.extend(undp_proc_tenders)
+
+    # 4) ReliefWeb Jobs (marine search)
     reliefweb_tenders = scrape_reliefweb_jobs(KEYWORDS)
     all_tenders.extend(reliefweb_tenders)
 
