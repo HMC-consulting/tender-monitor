@@ -68,8 +68,6 @@ TIER1_KEYWORDS = [
     "marine evidence",
     "marine autonomous systems",
     "marine ecosystem monitoring",
-    "pressures mapping",
-    "remote electronic monitoring",
 
     # ocean-climate (marine-specific)
     "coastal adaptation",
@@ -164,6 +162,8 @@ TIER2_KEYWORDS = [
     "workshop",
     "training course",
     "training delivery",
+    "pressures mapping",
+    "remote electronic monitoring",
 
     # research & impact
     "monitoring and evaluation",
