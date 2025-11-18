@@ -147,11 +147,12 @@ def scrape_undp_procurement():
 
 
 # ------------------------------------------------------
-# RELIEFWEB — API SEARCH (title + body)
+# RELIEFWEB — API SEARCH + full page scrape for keyword accuracy
 # ------------------------------------------------------
 def scrape_reliefweb():
     api_url = "https://api.reliefweb.int/v1/jobs"
 
+    # Step 1 — Get list of relevant-looking jobs via API
     payload = {
         "query": {
             "value": " OR ".join(TIER1_KEYWORDS),
@@ -159,7 +160,7 @@ def scrape_reliefweb():
             "fields": ["title", "body"]
         },
         "fields": {
-            "include": ["title", "url", "body"]
+            "include": ["title", "url"]
         },
         "limit": 100
     }
@@ -179,17 +180,31 @@ def scrape_reliefweb():
 
     tenders = []
 
+    # Step 2 — Fetch each job page to read full description
     for item in data["data"]:
         fields = item.get("fields", {})
         title = fields.get("title", "").strip()
         url = fields.get("url", "").strip()
-        body = fields.get("body", "")
 
         if not title or not url:
             continue
 
-        text = (title + " " + body).lower()
-        match, t1, t2 = match_keywords(text)
+        # Fetch the full job page (critical for full keyword search)
+        page_html = fetch(url)
+        if not page_html:
+            continue
+
+        soup = BeautifulSoup(page_html, "html.parser")
+
+        # ReliefWeb job descriptions use this class
+        body_div = soup.find("div", class_="rw-job__body")
+        full_text = title.lower()
+
+        if body_div:
+            full_text += " " + body_div.get_text(" ", strip=True).lower()
+
+        # Tier keyword matching on full text
+        match, t1, t2 = match_keywords(full_text)
         if not match:
             continue
 
