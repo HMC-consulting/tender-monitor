@@ -5,8 +5,13 @@ from keywords import KEYWORDS
 from emailer import send_email
 
 from scrapers.worldbank import scrape_worldbank
-from scrapers.undp import scrape_undp_consultancies, scrape_undp_procurement_notices
+from scrapers.undp import (
+    scrape_undp_consultancies,
+    scrape_undp_procurement_notices,
+)
 from scrapers.reliefweb import scrape_reliefweb_jobs
+
+from history import load_history, save_history, filter_new_tenders
 
 
 def load_config():
@@ -21,7 +26,7 @@ def build_email_body(tenders):
       source, title, url, deadline (optional), summary (optional), matches (list)
     """
     if not tenders:
-        return "No matching tenders or consultancy opportunities found today."
+        return "No NEW matching tenders or consultancy opportunities found today."
 
     # Group by source
     by_source = {}
@@ -30,7 +35,7 @@ def build_email_body(tenders):
         by_source.setdefault(src, []).append(t)
 
     lines = []
-    lines.append("🌊 Daily Tender & Consultancy Opportunities Report\n")
+    lines.append("🌊 Daily Tender & Consultancy Opportunities Report (NEW items only)\n")
 
     for source, items in by_source.items():
         lines.append(f"\n📌 {source}\n" + "-" * (4 + len(source)))
@@ -57,31 +62,39 @@ def main():
     config = load_config()
     email_to = config["email_to"]
 
+    # 1) Collect all raw tenders from all sites
     all_tenders = []
 
-    # 1) World Bank eProcure
+    # World Bank eProcure
     wb_tenders = scrape_worldbank(KEYWORDS)
     all_tenders.extend(wb_tenders)
 
-    # 2) UNDP Consultancies (jobs.undp.org)
+    # UNDP Consultancies (jobs.undp.org)
     undp_consult_tenders = scrape_undp_consultancies(KEYWORDS)
     all_tenders.extend(undp_consult_tenders)
 
-    # 3) UNDP Procurement Notices (procurement-notices.undp.org)
+    # UNDP Procurement Notices (procurement-notices.undp.org)
     undp_proc_tenders = scrape_undp_procurement_notices(KEYWORDS)
     all_tenders.extend(undp_proc_tenders)
 
-    # 4) ReliefWeb Jobs (marine search)
+    # ReliefWeb Jobs (we'll assume scrapers.reliefweb handles the right URL)
     reliefweb_tenders = scrape_reliefweb_jobs(KEYWORDS)
     all_tenders.extend(reliefweb_tenders)
 
-    # Build clean email body
-    email_body = build_email_body(all_tenders)
+    # 2) Load history and filter out already-seen tenders
+    history = load_history()
+    new_tenders = filter_new_tenders(all_tenders, history)
 
-    # Load Gmail credentials
+    # 3) Build email body from new items only
+    email_body = build_email_body(new_tenders)
+
+    # 4) Save updated history (so future runs know what we've seen)
+    save_history(history)
+
+    # 5) Load Gmail credentials
     creds = Credentials.from_authorized_user_file("token.json")
 
-    # Send email
+    # 6) Send email
     send_email(
         subject="Daily Tender & Consultancy Report",
         body=email_body,
