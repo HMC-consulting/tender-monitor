@@ -14,34 +14,43 @@ def load_config():
 
 def extract_links(html, base_url):
     """
-    Extracts all <a href="..."> links and their text.
-    Returns a list of dicts: {"url": full_url, "text": text}
+    Extract all <a href> links from the HTML and return a list of:
+    { "url": full_url, "text": link_text }
     """
+    if not html:
+        return []  # Safety check: skip broken or blocked pages
+
     soup = BeautifulSoup(html, "html.parser")
     links = []
 
     for a in soup.find_all("a", href=True):
-        href = a["href"]
+        href = a["href"].strip()
         text = a.get_text(" ", strip=True)
 
-        # Build full URL if relative
+        # Ignore invisible / empty text
+        if not text:
+            continue
+
+        # Determine full URL
         if href.startswith("http"):
             full_url = href
         else:
-            # join with base site
             full_url = base_url.rstrip("/") + "/" + href.lstrip("/")
 
-        # Clean text
+        # Clean text formatting
         cleaned_text = re.sub(r"\s+", " ", text)
 
-        links.append({"url": full_url, "text": cleaned_text})
+        links.append({
+            "url": full_url,
+            "text": cleaned_text
+        })
 
     return links
 
 
 def keyword_match(text, keywords):
     """
-    Returns list of matching keywords within the text (case insensitive).
+    Returns a list of keywords found in the given text (case-insensitive).
     """
     text_lower = text.lower()
     return [kw for kw in keywords if kw.lower() in text_lower]
@@ -49,12 +58,19 @@ def keyword_match(text, keywords):
 
 def scan_site_for_tenders(url, keywords):
     """
-    Fetches the site, extracts all links, and checks for keyword matches.
-    Returns list of tender records: [{"title": ..., "url": ..., "matches": [...]}, ...]
+    Fetches the site, extracts links, finds keyword matches, and returns:
+    [
+      { "title": ..., "url": ..., "matches": [...] },
+      ...
+    ]
     """
     html = fetch_page(url)
-    links = extract_links(html, url)
 
+    # If the site failed to load, skip safely
+    if not html:
+        return []
+
+    links = extract_links(html, url)
     tenders = []
 
     for link in links:
@@ -72,7 +88,7 @@ def scan_site_for_tenders(url, keywords):
 
 def build_email_body(results):
     """
-    Creates a clean, readable email summarizing all found tenders.
+    Creates a clean, readable email summary.
     """
     if not results:
         return "No matching tenders found today."
@@ -100,13 +116,13 @@ def main():
 
     results = {}
 
-    # Scan sites for tenders
+    # Scan each site
     for site in sites:
         tenders = scan_site_for_tenders(site, KEYWORDS)
         if tenders:
             results[site] = tenders
 
-    # Build email body
+    # Build email report
     email_body = build_email_body(results)
 
     # Load Gmail credentials
