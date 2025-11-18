@@ -158,7 +158,7 @@ def scrape_undp_procurement():
 # ------------------------------------------------------
 def scrape_reliefweb():
     base_url = "https://reliefweb.int"
-    url = f"{base_url}/jobs?search=marine"
+    url = f"{base_url}/jobs?advanced-search=%28TY264%29"
 
     html = fetch(url)
     if not html:
