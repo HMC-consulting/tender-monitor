@@ -258,56 +258,96 @@ def scrape_world_bank():
 
 
 # ------------------------------------------------------
-# HTML EMAIL BUILDER
+# Build Email (HTML + Text versions) — CLEAN FORMATTED
 # ------------------------------------------------------
 def build_email_bodies(tenders_with_source):
+    # ------------------------
+    # Plain text fallback
+    # ------------------------
+    if not tenders_with_source:
+        body_text = "No NEW marine/ocean-related tenders found today."
+    else:
+        lines = ["NEW Marine / Ocean Opportunities\n"]
+        current_source = None
+        for source, t in tenders_with_source:
+            if source != current_source:
+                lines.append(f"\n{source}")
+                lines.append("-" * len(source))
+                current_source = source
 
+            lines.append(f"- {t['title']}")
+            lines.append(f"  {t['url']}")
+            if t['tier1']:
+                lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
+            if t['tier2']:
+                lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
+        body_text = "\n".join(lines)
+
+    # ------------------------
+    # HTML VERSION — FIXED SPACING + CLEAN LAYOUT
+    # ------------------------
     if not tenders_with_source:
         body_html = """
         <html><body>
         <h2 style="color:#004080;">No NEW marine/ocean-related tenders found today.</h2>
         </body></html>
         """
-        return body_html, "No NEW marine/ocean-related tenders found today."
+        return body_html, body_text
 
     html = []
     html.append("""
     <html>
     <body style="font-family:Arial, sans-serif; font-size:14px; color:#333;">
-        <h2 style="color:#004080;">🌊 New Marine / Ocean Opportunities</h2>
+    <h2 style="color:#004080; margin-bottom:20px;">
+        🌊 New Marine / Ocean Opportunities
+    </h2>
     """)
 
     current_source = None
+
     for source, t in tenders_with_source:
+
+        # Source header
         if source != current_source:
             html.append(f"""
-                <h3 style="color:#0066aa; margin-top:25px;">{source}</h3>
-                <hr style="border:0; border-top:1px solid #ccc;">
+            <h3 style="color:#0066aa; margin-top:30px; margin-bottom:5px;">
+                {source}
+            </h3>
+            <hr style="border:0; border-top:1px solid #ccc; margin-bottom:20px;">
             """)
             current_source = source
 
+        # Tender block
         html.append(f"""
-            <div style="margin-bottom:30px; padding-bottom:10px;">
-                <div style="font-weight:bold; margin-bottom:5px;">{t['title']}</div>
+            <div style="margin-bottom:25px;">
+                <div style="font-size:15px; font-weight:bold; margin-bottom:6px;">
+                    {t['title']}
+                </div>
 
-                <div style="margin-bottom:4px;">
+                <div style="margin-bottom:6px;">
                     <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a>
                 </div>
-
-                <div style="font-size:12px; color:#006600;">
-                    <strong>Tier 1:</strong> {', '.join(t['tier1'])}
-                </div>
-
-                {f"<div style='font-size:12px; color:#555;'><strong>Tier 2:</strong> {', '.join(t['tier2'])}</div>" if t['tier2'] else ''}
-            </div>
         """)
 
+        if t['tier1']:
+            html.append(f"""
+                <div style="font-size:12px; color:#006600; margin-bottom:4px;">
+                    <strong>Tier 1:</strong> {', '.join(t['tier1'])}
+                </div>
+            """)
+
+        if t['tier2']:
+            html.append(f"""
+                <div style="font-size:12px; color:#444;">
+                    <strong>Tier 2:</strong> {', '.join(t['tier2'])}
+                </div>
+            """)
+
+        html.append("</div>")
+
     html.append("</body></html>")
+
     body_html = "".join(html)
-
-    # simple text fallback
-    body_text = "\n".join([f"{s}: {t['title']} {t['url']}" for s, t in tenders_with_source])
-
     return body_html, body_text
 
 
