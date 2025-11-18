@@ -1,0 +1,29 @@
+name: Run Daily Tender Scan
+
+on:
+  schedule:
+    - cron: "0 7 * * *"   # Runs every day at 07:00 UTC
+  workflow_dispatch:       # Allows manual runs from the Actions tab
+
+jobs:
+  run-tender-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.10"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Create Gmail token file from secret
+        run: |
+          echo "${{ secrets.GMAIL_TOKEN }}" > token.json
+
+      - name: Run the tender scraper
+        run: python scraper.py
