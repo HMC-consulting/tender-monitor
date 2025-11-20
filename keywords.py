@@ -66,7 +66,7 @@ TIER1_KEYWORDS = [
     "small-scale fisheries",
     "artisanal fisheries",
     "ecosystem-based management",
-    "ebm",
+    "ecosystem based management",
     "eafm",
     "iuu",
     "illegal unreported unregulated fishing",
