@@ -64,6 +64,8 @@ def fetch(url: str) -> str | None:
         resp = requests.get(url, headers=headers, timeout=30)
         if resp.status_code == 200:
             return resp.text
+        else:
+            print(f"❌ Fetch {url} returned status {resp.status_code}")
     except Exception as e:
         print(f"❌ Error fetching {url}: {e}")
     return None
@@ -152,7 +154,7 @@ def scrape_undp_procurement():
 def scrape_reliefweb():
     api_url = "https://api.reliefweb.int/v1/jobs"
 
-    # Step 1 — Get list of relevant-looking jobs via API
+    # Step 1 — Get list of potentially relevant jobs via API
     payload = {
         "query": {
             "value": " OR ".join(TIER1_KEYWORDS),
@@ -170,11 +172,11 @@ def scrape_reliefweb():
         if resp.status_code != 200:
             print(f"❌ ReliefWeb API returned {resp.status_code}")
             return []
+        data = resp.json()
     except Exception as e:
         print(f"❌ ReliefWeb API error: {e}")
         return []
 
-    data = resp.json()
     if "data" not in data:
         return []
 
@@ -189,21 +191,26 @@ def scrape_reliefweb():
         if not title or not url:
             continue
 
-        # Fetch the full job page (critical for full keyword search)
         page_html = fetch(url)
         if not page_html:
             continue
 
         soup = BeautifulSoup(page_html, "html.parser")
 
-        # ReliefWeb job descriptions use this class
-        body_div = soup.find("div", class_="rw-job__body")
+        # ReliefWeb job descriptions – try main content containers
+        body_container = (
+            soup.select_one("div.rw-article__content")
+            or soup.select_one("section.rw-article__body")
+            or soup.select_one("div.rw-job__body")
+        )
+
         full_text = title.lower()
+        if body_container:
+            full_text += " " + body_container.get_text(" ", strip=True).lower()
+        else:
+            # Fallback: all text if we can't find a specific container
+            full_text += " " + soup.get_text(" ", strip=True).lower()
 
-        if body_div:
-            full_text += " " + body_div.get_text(" ", strip=True).lower()
-
-        # Tier keyword matching on full text
         match, t1, t2 = match_keywords(full_text)
         if not match:
             continue
@@ -220,9 +227,14 @@ def scrape_reliefweb():
 
 
 # ------------------------------------------------------
-# WORLD BANK
+# WORLD BANK (best-effort HTML scraper)
 # ------------------------------------------------------
 def scrape_world_bank():
+    """
+    NOTE: The World Bank eProcure site is heavily JavaScript-driven.
+    This HTML scraper may only see a subset of opportunities.
+    It is a best-effort heuristic and may miss some JS-only listings.
+    """
     base_url = "https://wbgeprocure-rfxnow.worldbank.org"
     url = f"{base_url}/rfxnow/public/advertisement/index.html"
 
@@ -233,26 +245,29 @@ def scrape_world_bank():
     soup = BeautifulSoup(html, "html.parser")
     tenders = []
 
-    for row in soup.find_all("tr"):
-        link = row.find("a", href=True)
-        if not link:
+    # Look for links that look like individual advertisements
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if "advertisement-overview" not in href and "advertisement" not in href:
             continue
 
         title = link.get_text(strip=True)
-        if not title:
+        if not title or len(title) < 3:
             continue
 
-        full_url = urljoin(base_url, link["href"])
+        full_url = urljoin(base_url, href)
 
         match, t1, t2 = match_keywords(title)
-        if match:
-            tenders.append({
-                "id": full_url,
-                "title": title,
-                "url": full_url,
-                "tier1": t1,
-                "tier2": t2
-            })
+        if not match:
+            continue
+
+        tenders.append({
+            "id": full_url,
+            "title": title,
+            "url": full_url,
+            "tier1": t1,
+            "tier2": t2
+        })
 
     return tenders
 
@@ -261,9 +276,7 @@ def scrape_world_bank():
 # Build Email (HTML + Text versions) — CLEAN FORMATTED
 # ------------------------------------------------------
 def build_email_bodies(tenders_with_source):
-    # ------------------------
     # Plain text fallback
-    # ------------------------
     if not tenders_with_source:
         body_text = "No NEW marine/ocean-related tenders found today."
     else:
@@ -277,15 +290,13 @@ def build_email_bodies(tenders_with_source):
 
             lines.append(f"- {t['title']}")
             lines.append(f"  {t['url']}")
-            if t['tier1']:
+            if t["tier1"]:
                 lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
-            if t['tier2']:
+            if t["tier2"]:
                 lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
         body_text = "\n".join(lines)
 
-    # ------------------------
-    # HTML VERSION — FIXED SPACING + CLEAN LAYOUT
-    # ------------------------
+    # HTML version
     if not tenders_with_source:
         body_html = """
         <html><body>
@@ -304,10 +315,7 @@ def build_email_bodies(tenders_with_source):
     """)
 
     current_source = None
-
     for source, t in tenders_with_source:
-
-        # Source header
         if source != current_source:
             html.append(f"""
             <h3 style="color:#0066aa; margin-top:30px; margin-bottom:5px;">
@@ -317,26 +325,24 @@ def build_email_bodies(tenders_with_source):
             """)
             current_source = source
 
-        # Tender block
         html.append(f"""
             <div style="margin-bottom:25px;">
                 <div style="font-size:15px; font-weight:bold; margin-bottom:6px;">
                     {t['title']}
                 </div>
-
                 <div style="margin-bottom:6px;">
                     <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a>
                 </div>
         """)
 
-        if t['tier1']:
+        if t["tier1"]:
             html.append(f"""
                 <div style="font-size:12px; color:#006600; margin-bottom:4px;">
                     <strong>Tier 1:</strong> {', '.join(t['tier1'])}
                 </div>
             """)
 
-        if t['tier2']:
+        if t["tier2"]:
             html.append(f"""
                 <div style="font-size:12px; color:#444;">
                     <strong>Tier 2:</strong> {', '.join(t['tier2'])}
@@ -346,8 +352,8 @@ def build_email_bodies(tenders_with_source):
         html.append("</div>")
 
     html.append("</body></html>")
-
     body_html = "".join(html)
+
     return body_html, body_text
 
 
@@ -366,7 +372,7 @@ def main():
         ("UNDP Consultancies", scrape_undp_consultancies),
         ("UNDP Procurement Notices", scrape_undp_procurement),
         ("ReliefWeb", scrape_reliefweb),
-        ("World Bank eProcure", scrape_world_bank)
+        ("World Bank eProcure", scrape_world_bank),
     ]
 
     for source_name, func in sources:
@@ -390,7 +396,7 @@ def main():
         body_html=body_html,
         body_text=body_text,
         creds=creds,
-        email_to=email_to
+        email_to=email_to,
     )
 
     save_seen(updated_seen)
