@@ -6,6 +6,7 @@ TIER1_KEYWORDS = [
     "marine",
     "coast",
     "coastal",
+    "coastal zone",
     "blue economy",
     "sustainable blue economy",
     "ocean economy",
@@ -19,11 +20,23 @@ TIER1_KEYWORDS = [
     "ocean policy",
     "national ocean plan",
 
-    # marine spatial planning
+    # marine spatial planning / coastal planning
     "marine spatial plan",
     "marine spatial planning",
     "marine plan",
+    "marine planning",
     "msp",
+    "marine spatial framework",
+    "marine management plan",
+    "marine management framework",
+    "coastal zone management",
+    "integrated coastal zone management",
+    "iczm",
+
+    # seascapes
+    "seascape",
+    "seascape management",
+    "seascape planning",
 
     # conservation, biodiversity (marine only)
     "marine protected area",
@@ -53,6 +66,7 @@ TIER1_KEYWORDS = [
     "small-scale fisheries",
     "artisanal fisheries",
     "ecosystem-based management",
+    "ebm",
     "eafm",
     "iuu",
     "illegal unreported unregulated fishing",
@@ -64,6 +78,7 @@ TIER1_KEYWORDS = [
     "marine data",
     "marine evidence",
     "marine autonomous systems",
+    "marine biodiversity monitoring",
     "marine ecosystem monitoring",
 
     # ocean-climate (marine-specific)
@@ -102,6 +117,7 @@ TIER2_KEYWORDS = [
     "climate vulnerability",
     "climate risk",
     "nature-based solutions",
+    "nature based solutions",
     "nbs",
     "national adaptation plan",
     "nap",
@@ -113,6 +129,7 @@ TIER2_KEYWORDS = [
     "fisheries technology",
     "traceability systems",
     "post-harvest handling",
+    "post harvest handling",
     "fish farming",
     "seafood production",
 
@@ -169,6 +186,7 @@ TIER2_KEYWORDS = [
     "evaluation",
     "mrv",
     "programme evaluation",
+    "program evaluation",
     "impact evaluation",
     "impact monitoring",
     "theory of change",
@@ -180,6 +198,7 @@ TIER2_KEYWORDS = [
     "science advice",
     "evidence synthesis",
     "programme mobilisation",
+    "program mobilisation",
     "research commissioning",
     "call design",
     "evidence gap analysis",
