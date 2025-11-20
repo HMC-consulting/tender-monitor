@@ -72,80 +72,127 @@ def fetch(url: str) -> str | None:
 
 
 # ------------------------------------------------------
-# UNDP CONSULTANCIES (jobs.undp.org)
+# UNDP CONSULTANCIES — FULL PAGINATION
 # ------------------------------------------------------
 def scrape_undp_consultancies():
     base_url = "https://jobs.undp.org"
-    url = f"{base_url}/cj_view_consultancies.cfm"
+    page = 1
+    results = []
 
-    html = fetch(url)
-    if not html:
-        return []
+    while True:
+        url = f"{base_url}/cj_view_consultancies.cfm?cur_page={page}"
+        html = fetch(url)
+        if not html:
+            break
 
-    soup = BeautifulSoup(html, "html.parser")
-    tenders = []
+        soup = BeautifulSoup(html, "html.parser")
+        rows = soup.find_all("tr")
 
-    for row in soup.find_all("tr"):
-        link = row.find("a", href=True)
-        if not link:
-            continue
+        if not rows:
+            break  # no more pages
 
-        title = link.get_text(strip=True)
-        if not title:
-            continue
+        found_any = False
 
-        full_url = urljoin(base_url, link["href"])
+        for row in rows:
+            link = row.find("a", href=True)
+            if not link:
+                continue
 
-        match, t1, t2 = match_keywords(title)
-        if match:
-            tenders.append({
-                "id": full_url,
-                "title": title,
-                "url": full_url,
-                "tier1": t1,
-                "tier2": t2
-            })
+            title = link.get_text(strip=True)
+            if not title:
+                continue
 
-    return tenders
+            # Build full job URL
+            full_url = urljoin(base_url, link["href"])
 
+            # Full page fetch to scan full description
+            detail_html = fetch(full_url)
+            if not detail_html:
+                continue
+
+            detail_soup = BeautifulSoup(detail_html, "html.parser")
+            text_block = detail_soup.get_text(" ", strip=True).lower()
+            text = f"{title.lower()} {text_block}"
+
+            match, t1, t2 = match_keywords(text)
+            if match:
+                found_any = True
+                results.append({
+                    "id": full_url,
+                    "title": title,
+                    "url": full_url,
+                    "tier1": t1,
+                    "tier2": t2
+                })
+
+        if not found_any:
+            break  # stop if this page contained nothing at all
+
+        page += 1
+
+    return results
+    
 
 # ------------------------------------------------------
-# UNDP PROCUREMENT NOTICES
+# UNDP PROCUREMENT NOTICES — FULL PAGINATION
 # ------------------------------------------------------
 def scrape_undp_procurement():
     base_url = "https://procurement-notices.undp.org"
-    url = base_url + "/"
+    results = []
+    page = 1
 
-    html = fetch(url)
-    if not html:
-        return []
+    while True:
+        url = f"{base_url}/index.cfm?cur_page={page}"
+        html = fetch(url)
+        if not html:
+            break
 
-    soup = BeautifulSoup(html, "html.parser")
-    tenders = []
+        soup = BeautifulSoup(html, "html.parser")
+        links = soup.find_all("a", href=True)
 
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
+        if not links:
+            break
 
-        if "view_notice" not in href and "view_negotiation" not in href:
-            continue
+        found_any = False
 
-        title = link.get_text(strip=True)
-        if not title or len(title) < 3:
-            continue
+        for link in links:
+            href = link["href"]
 
-        full_url = urljoin(base_url, href)
+            if "view_notice" not in href and "view_negotiation" not in href:
+                continue
 
-        match, t1, t2 = match_keywords(title)
-        if match:
-            tenders.append({
-                "id": full_url,
-                "title": title,
-                "url": full_url,
-                "tier1": t1,
-                "tier2": t2
-            })
+            title = link.get_text(strip=True)
+            if not title:
+                continue
 
-    return tenders
+            full_url = urljoin(base_url, href)
+
+            # fetch page for full text scanning
+            detail_html = fetch(full_url)
+            if not detail_html:
+                continue
+
+            detail_soup = BeautifulSoup(detail_html, "html.parser")
+            full_text = detail_soup.get_text(" ", strip=True).lower()
+            combined = f"{title.lower()} {full_text}"
+
+            match, t1, t2 = match_keywords(combined)
+            if match:
+                found_any = True
+                results.append({
+                    "id": full_url,
+                    "title": title,
+                    "url": full_url,
+                    "tier1": t1,
+                    "tier2": t2
+                })
+
+        if not found_any:
+            break  # stop if this page contained no matches or no valid posts
+
+        page += 1
+
+    return results
 
 
 # ------------------------------------------------------
