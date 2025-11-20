@@ -268,49 +268,69 @@ def scrape_reliefweb():
 
 
 # ------------------------------------------------------
-# WORLD BANK (best-effort HTML scraper)
+# WORLD BANK EPROCURE — FULL PAGINATION
 # ------------------------------------------------------
 def scrape_world_bank():
-    """
-    NOTE: The World Bank eProcure site is heavily JavaScript-driven.
-    This HTML scraper may only see a subset of opportunities.
-    It is a best-effort heuristic and may miss some JS-only listings.
-    """
     base_url = "https://wbgeprocure-rfxnow.worldbank.org"
-    url = f"{base_url}/rfxnow/public/advertisement/index.html"
+    page = 1
+    results = []
 
-    html = fetch(url)
-    if not html:
-        return []
+    while True:
+        # Page parameter used by the site
+        url = f"{base_url}/rfxnow/public/advertisement/index.html?page={page}"
 
-    soup = BeautifulSoup(html, "html.parser")
-    tenders = []
+        html = fetch(url)
+        if not html:
+            break  # page not reachable
 
-    # Look for links that look like individual advertisements
-    for link in soup.find_all("a", href=True):
-        href = link["href"]
-        if "advertisement-overview" not in href and "advertisement" not in href:
-            continue
+        soup = BeautifulSoup(html, "html.parser")
+        rows = soup.find_all("tr")
 
-        title = link.get_text(strip=True)
-        if not title or len(title) < 3:
-            continue
+        if not rows:
+            break  # no rows → end of pagination
 
-        full_url = urljoin(base_url, href)
+        found_any = False
 
-        match, t1, t2 = match_keywords(title)
-        if not match:
-            continue
+        for row in rows:
+            link = row.find("a", href=True)
+            if not link:
+                continue
 
-        tenders.append({
-            "id": full_url,
-            "title": title,
-            "url": full_url,
-            "tier1": t1,
-            "tier2": t2
-        })
+            title = link.get_text(strip=True)
+            if not title or len(title) < 3:
+                continue
 
-    return tenders
+            href = link["href"]
+            full_url = urljoin(base_url, href)
+
+            # Fetch full detail page for full-text scanning
+            detail_html = fetch(full_url)
+            if not detail_html:
+                continue
+
+            detail_soup = BeautifulSoup(detail_html, "html.parser")
+            text_block = detail_soup.get_text(" ", strip=True).lower()
+            combined_text = f"{title.lower()} {text_block}"
+
+            # Tiered keyword match
+            match, t1, t2 = match_keywords(combined_text)
+            if match:
+                found_any = True
+                results.append({
+                    "id": full_url,
+                    "title": title,
+                    "url": full_url,
+                    "tier1": t1,
+                    "tier2": t2
+                })
+
+        # If a page contains *no* relevant items, stop pagination
+        if not found_any:
+            break
+
+        page += 1
+
+    return results
 
 
 # ------------------------------------------------------
