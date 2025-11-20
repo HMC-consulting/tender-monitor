@@ -4,6 +4,7 @@ import yaml
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from emailer import send_email
 from google.oauth2.credentials import Credentials
@@ -51,12 +52,11 @@ def match_keywords(text: str):
         return False, [], []
 
     tier2_hits = [kw for kw in TIER2_KEYWORDS if kw in text]
-
     return True, tier1_hits, tier2_hits
 
 
 # ------------------------------------------------------
-# Fetch helper
+# HTTP helpers
 # ------------------------------------------------------
 def fetch(url: str) -> str | None:
     try:
@@ -71,15 +71,39 @@ def fetch(url: str) -> str | None:
     return None
 
 
+def fetch_many(urls, max_workers=8):
+    """
+    Fetch many URLs in parallel. Returns dict {url: html_or_None}.
+    """
+    results = {}
+    unique_urls = list(dict.fromkeys(urls))  # dedupe, preserve order
+
+    def _fetch_one(u):
+        return u, fetch(u)
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        future_to_url = {executor.submit(_fetch_one, u): u for u in unique_urls}
+        for future in as_completed(future_to_url):
+            try:
+                url, html = future.result()
+                results[url] = html
+            except Exception as e:
+                url = future_to_url[future]
+                print(f"❌ Error in fetch_many for {url}: {e}")
+                results[url] = None
+
+    return results
+
+
 # ------------------------------------------------------
-# UNDP CONSULTANCIES — FULL PAGINATION
+# UNDP CONSULTANCIES — PAGINATED + PARALLEL DETAIL FETCH
 # ------------------------------------------------------
 def scrape_undp_consultancies():
     base_url = "https://jobs.undp.org"
-    page = 1
-    results = []
+    max_pages = 3  # Fast mode
+    jobs = []
 
-    while True:
+    for page in range(1, max_pages + 1):
         url = f"{base_url}/cj_view_consultancies.cfm?cur_page={page}"
         html = fetch(url)
         if not html:
@@ -87,11 +111,10 @@ def scrape_undp_consultancies():
 
         soup = BeautifulSoup(html, "html.parser")
         rows = soup.find_all("tr")
-
         if not rows:
-            break  # no more pages
+            break
 
-        found_any = False
+        page_found = False
 
         for row in rows:
             link = row.find("a", href=True)
@@ -102,46 +125,51 @@ def scrape_undp_consultancies():
             if not title:
                 continue
 
-            # Build full job URL
             full_url = urljoin(base_url, link["href"])
+            jobs.append({"title": title, "url": full_url})
+            page_found = True
 
-            # Full page fetch to scan full description
-            detail_html = fetch(full_url)
-            if not detail_html:
-                continue
+        if not page_found:
+            break
 
-            detail_soup = BeautifulSoup(detail_html, "html.parser")
-            text_block = detail_soup.get_text(" ", strip=True).lower()
-            text = f"{title.lower()} {text_block}"
+    # Fetch detail pages in parallel
+    url_list = [j["url"] for j in jobs]
+    html_map = fetch_many(url_list, max_workers=8)
 
-            match, t1, t2 = match_keywords(text)
-            if match:
-                found_any = True
-                results.append({
-                    "id": full_url,
-                    "title": title,
-                    "url": full_url,
-                    "tier1": t1,
-                    "tier2": t2
-                })
+    tenders = []
+    for job in jobs:
+        title = job["title"]
+        url = job["url"]
+        detail_html = html_map.get(url)
+        if not detail_html:
+            continue
 
-        if not found_any:
-            break  # stop if this page contained nothing at all
+        detail_soup = BeautifulSoup(detail_html, "html.parser")
+        full_text = detail_soup.get_text(" ", strip=True).lower()
+        combined = f"{title.lower()} {full_text}"
 
-        page += 1
+        match, t1, t2 = match_keywords(combined)
+        if match:
+            tenders.append({
+                "id": url,
+                "title": title,
+                "url": url,
+                "tier1": t1,
+                "tier2": t2
+            })
 
-    return results
-    
+    return tenders
+
 
 # ------------------------------------------------------
-# UNDP PROCUREMENT NOTICES — FULL PAGINATION
+# UNDP PROCUREMENT NOTICES — PAGINATED + PARALLEL DETAIL FETCH
 # ------------------------------------------------------
 def scrape_undp_procurement():
     base_url = "https://procurement-notices.undp.org"
-    results = []
-    page = 1
+    max_pages = 3  # Fast mode
+    items = []
 
-    while True:
+    for page in range(1, max_pages + 1):
         url = f"{base_url}/index.cfm?cur_page={page}"
         html = fetch(url)
         if not html:
@@ -149,15 +177,13 @@ def scrape_undp_procurement():
 
         soup = BeautifulSoup(html, "html.parser")
         links = soup.find_all("a", href=True)
-
         if not links:
             break
 
-        found_any = False
+        page_found = False
 
         for link in links:
             href = link["href"]
-
             if "view_notice" not in href and "view_negotiation" not in href:
                 continue
 
@@ -166,130 +192,146 @@ def scrape_undp_procurement():
                 continue
 
             full_url = urljoin(base_url, href)
+            items.append({"title": title, "url": full_url})
+            page_found = True
 
-            # fetch page for full text scanning
-            detail_html = fetch(full_url)
-            if not detail_html:
-                continue
-
-            detail_soup = BeautifulSoup(detail_html, "html.parser")
-            full_text = detail_soup.get_text(" ", strip=True).lower()
-            combined = f"{title.lower()} {full_text}"
-
-            match, t1, t2 = match_keywords(combined)
-            if match:
-                found_any = True
-                results.append({
-                    "id": full_url,
-                    "title": title,
-                    "url": full_url,
-                    "tier1": t1,
-                    "tier2": t2
-                })
-
-        if not found_any:
-            break  # stop if this page contained no matches or no valid posts
-
-        page += 1
-
-    return results
-
-
-# ------------------------------------------------------
-# RELIEFWEB — FULL MULTI-PAGE CRAWL + FULL TEXT MATCHING
-# ------------------------------------------------------
-def scrape_reliefweb():
-    base_api_url = "https://api.reliefweb.int/v1/jobs"
-    all_results = []
-    offset = 0
-    page_size = 100  # max allowed per API call
-
-    while True:
-        payload = {
-            "query": {
-                "value": " OR ".join(TIER1_KEYWORDS),
-                "operator": "OR",
-                "fields": ["title", "body"]
-            },
-            "fields": {
-                "include": ["title", "url"]
-            },
-            "limit": page_size,
-            "offset": offset
-        }
-
-        try:
-            resp = requests.post(base_api_url, json=payload, timeout=30)
-            if resp.status_code != 200:
-                print(f"❌ ReliefWeb API returned {resp.status_code}")
-                break
-        except Exception as e:
-            print(f"❌ ReliefWeb API error: {e}")
+        if not page_found:
             break
 
-        data = resp.json()
-        if "data" not in data or len(data["data"]) == 0:
-            break  # no more pages
+    # Fetch detail pages in parallel
+    url_list = [i["url"] for i in items]
+    html_map = fetch_many(url_list, max_workers=8)
 
-        # Process each job returned
-        for item in data["data"]:
-            fields = item.get("fields", {})
-            title = fields.get("title", "").strip()
-            url = fields.get("url", "").strip()
-            if not title or not url:
-                continue
+    tenders = []
+    for item in items:
+        title = item["title"]
+        url = item["url"]
+        detail_html = html_map.get(url)
+        if not detail_html:
+            continue
 
-            # Fetch full page to scan description
-            page_html = fetch(url)
-            if not page_html:
-                continue
+        detail_soup = BeautifulSoup(detail_html, "html.parser")
+        full_text = detail_soup.get_text(" ", strip=True).lower()
+        combined = f"{title.lower()} {full_text}"
 
-            soup = BeautifulSoup(page_html, "html.parser")
-            body_div = soup.find("div", class_="rw-job__body")
+        match, t1, t2 = match_keywords(combined)
+        if match:
+            tenders.append({
+                "id": url,
+                "title": title,
+                "url": url,
+                "tier1": t1,
+                "tier2": t2
+            })
 
-            full_text = title.lower()
-            if body_div:
-                full_text += " " + body_div.get_text(" ", strip=True).lower()
-
-            match, t1, t2 = match_keywords(full_text)
-            if match:
-                all_results.append({
-                    "id": url,
-                    "title": title,
-                    "url": url,
-                    "tier1": t1,
-                    "tier2": t2
-                })
-
-        # Move to next page
-        offset += page_size
-
-    return all_results
+    return tenders
 
 
 # ------------------------------------------------------
-# WORLD BANK EPROCURE — FULL PAGINATION
+# RELIEFWEB — HTML LISTING + FULL DETAIL PAGES (LIMITED PAGES)
 # ------------------------------------------------------
-def scrape_world_bank():
-    base_url = "https://wbgeprocure-rfxnow.worldbank.org"
-    page = 1
-    results = []
+def scrape_reliefweb():
+    base_url = "https://reliefweb.int"
+    max_pages = 3  # Fast mode
+    jobs = []
 
-    while True:
-        # Page parameter used by the site
-        url = f"{base_url}/rfxnow/public/advertisement/index.html?page={page}"
+    # ReliefWeb paginates as /jobs, /jobs?page=1, /jobs?page=2, etc.
+    for page in range(0, max_pages):
+        if page == 0:
+            url = f"{base_url}/jobs"
+        else:
+            url = f"{base_url}/jobs?page={page}"
 
         html = fetch(url)
         if not html:
-            break  # page not reachable
+            break
+
+        soup = BeautifulSoup(html, "html.parser")
+        links = soup.select("a.rw-river-article__title-link")
+        if not links:
+            break
+
+        page_found = False
+
+        for link in links:
+            title = link.get_text(strip=True)
+            href = link.get("href")
+            if not title or not href:
+                continue
+
+            full_url = urljoin(base_url, href)
+            jobs.append({"title": title, "url": full_url})
+            page_found = True
+
+        if not page_found:
+            break
+
+    # Fetch job pages in parallel
+    url_list = [j["url"] for j in jobs]
+    html_map = fetch_many(url_list, max_workers=8)
+
+    tenders = []
+    for job in jobs:
+        title = job["title"]
+        url = job["url"]
+        page_html = html_map.get(url)
+        if not page_html:
+            continue
+
+        page_soup = BeautifulSoup(page_html, "html.parser")
+
+        # Try several possible containers for job body
+        body_container = (
+            page_soup.select_one("div.rw-job__body")
+            or page_soup.select_one("div.rw-article__content")
+            or page_soup.select_one("section.rw-article__body")
+        )
+
+        full_text = title.lower()
+        if body_container:
+            full_text += " " + body_container.get_text(" ", strip=True).lower()
+        else:
+            full_text += " " + page_soup.get_text(" ", strip=True).lower()
+
+        match, t1, t2 = match_keywords(full_text)
+        if not match:
+            continue
+
+        tenders.append({
+            "id": url,
+            "title": title,
+            "url": url,
+            "tier1": t1,
+            "tier2": t2
+        })
+
+    return tenders
+
+
+# ------------------------------------------------------
+# WORLD BANK — PAGINATION LIMITED + PARALLEL DETAIL FETCH
+# ------------------------------------------------------
+def scrape_world_bank():
+    """
+    World Bank eProcure — best-effort HTML scraper.
+    JavaScript-heavy, so we cap to a few pages for speed.
+    """
+    base_url = "https://wbgeprocure-rfxnow.worldbank.org"
+    max_pages = 3  # Fast mode
+    items = []
+
+    for page in range(1, max_pages + 1):
+        url = f"{base_url}/rfxnow/public/advertisement/index.html?page={page}"
+        html = fetch(url)
+        if not html:
+            break
 
         soup = BeautifulSoup(html, "html.parser")
         rows = soup.find_all("tr")
-
         if not rows:
-            break  # no rows → end of pagination
+            break
 
-        found_any = False
+        page_found = False
 
         for row in rows:
             link = row.find("a", href=True)
@@ -303,41 +345,48 @@ def scrape_world_bank():
             href = link["href"]
             full_url = urljoin(base_url, href)
 
-            # Fetch full detail page for full-text scanning
-            detail_html = fetch(full_url)
-            if not detail_html:
-                continue
+            items.append({"title": title, "url": full_url})
+            page_found = True
 
-            detail_soup = BeautifulSoup(detail_html, "html.parser")
-            text_block = detail_soup.get_text(" ", strip=True).lower()
-            combined_text = f"{title.lower()} {text_block}"
-
-            # Tiered keyword match
-            match, t1, t2 = match_keywords(combined_text)
-            if match:
-                found_any = True
-                results.append({
-                    "id": full_url,
-                    "title": title,
-                    "url": full_url,
-                    "tier1": t1,
-                    "tier2": t2
-                })
-
-        # If a page contains *no* relevant items, stop pagination
-        if not found_any:
+        if not page_found:
             break
 
-        page += 1
+    # Fetch detail pages in parallel
+    url_list = [i["url"] for i in items]
+    html_map = fetch_many(url_list, max_workers=6)
 
-    return results
+    tenders = []
+    for item in items:
+        title = item["title"]
+        url = item["url"]
+        detail_html = html_map.get(url)
+        if not detail_html:
+            continue
+
+        detail_soup = BeautifulSoup(detail_html, "html.parser")
+        text_block = detail_soup.get_text(" ", strip=True).lower()
+        combined = f"{title.lower()} {text_block}"
+
+        match, t1, t2 = match_keywords(combined)
+        if not match:
+            continue
+
+        tenders.append({
+            "id": url,
+            "title": title,
+            "url": url,
+            "tier1": t1,
+            "tier2": t2
+        })
+
+    return tenders
 
 
 # ------------------------------------------------------
-# Build Email (HTML + Text versions) — CLEAN FORMATTED
+# Build Email (HTML + Text versions)
 # ------------------------------------------------------
 def build_email_bodies(tenders_with_source):
-    # Plain text fallback
+    # Plain text
     if not tenders_with_source:
         body_text = "No NEW marine/ocean-related tenders found today."
     else:
@@ -357,7 +406,7 @@ def build_email_bodies(tenders_with_source):
                 lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
         body_text = "\n".join(lines)
 
-    # HTML version
+    # HTML
     if not tenders_with_source:
         body_html = """
         <html><body>
@@ -436,6 +485,7 @@ def main():
         ("World Bank eProcure", scrape_world_bank),
     ]
 
+    # Run scrapers sequentially (each one uses parallel detail fetching)
     for source_name, func in sources:
         try:
             tenders = func()
