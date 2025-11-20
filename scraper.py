@@ -149,61 +149,75 @@ def scrape_undp_procurement():
 
 
 # ------------------------------------------------------
-# RELIEFWEB — Full HTML scraping (no API dependency)
+# RELIEFWEB — FULL MULTI-PAGE CRAWL + FULL TEXT MATCHING
 # ------------------------------------------------------
 def scrape_reliefweb():
-    base_url = "https://reliefweb.int"
-    start_url = f"{base_url}/jobs"
+    base_api_url = "https://api.reliefweb.int/v1/jobs"
+    all_results = []
+    offset = 0
+    page_size = 100  # max allowed per API call
 
-    html = fetch(start_url)
-    if not html:
-        print("❌ ReliefWeb listing page failed to load")
-        return []
+    while True:
+        payload = {
+            "query": {
+                "value": " OR ".join(TIER1_KEYWORDS),
+                "operator": "OR",
+                "fields": ["title", "body"]
+            },
+            "fields": {
+                "include": ["title", "url"]
+            },
+            "limit": page_size,
+            "offset": offset
+        }
 
-    soup = BeautifulSoup(html, "html.parser")
+        try:
+            resp = requests.post(base_api_url, json=payload, timeout=30)
+            if resp.status_code != 200:
+                print(f"❌ ReliefWeb API returned {resp.status_code}")
+                break
+        except Exception as e:
+            print(f"❌ ReliefWeb API error: {e}")
+            break
 
-    # ReliefWeb listing titles use this class
-    links = soup.select("a.rw-river-article__title-link")
+        data = resp.json()
+        if "data" not in data or len(data["data"]) == 0:
+            break  # no more pages
 
-    tenders = []
+        # Process each job returned
+        for item in data["data"]:
+            fields = item.get("fields", {})
+            title = fields.get("title", "").strip()
+            url = fields.get("url", "").strip()
+            if not title or not url:
+                continue
 
-    for link in links:
-        title = link.get_text(strip=True)
-        href = link.get("href")
+            # Fetch full page to scan description
+            page_html = fetch(url)
+            if not page_html:
+                continue
 
-        if not title or not href:
-            continue
+            soup = BeautifulSoup(page_html, "html.parser")
+            body_div = soup.find("div", class_="rw-job__body")
 
-        full_url = urljoin(base_url, href)
+            full_text = title.lower()
+            if body_div:
+                full_text += " " + body_div.get_text(" ", strip=True).lower()
 
-        # Fetch full job description page
-        page_html = fetch(full_url)
-        if not page_html:
-            continue
+            match, t1, t2 = match_keywords(full_text)
+            if match:
+                all_results.append({
+                    "id": url,
+                    "title": title,
+                    "url": url,
+                    "tier1": t1,
+                    "tier2": t2
+                })
 
-        page_soup = BeautifulSoup(page_html, "html.parser")
+        # Move to next page
+        offset += page_size
 
-        # ReliefWeb job description container
-        body_div = page_soup.find("div", class_="rw-job__body")
-
-        full_text = title.lower()
-        if body_div:
-            full_text += " " + body_div.get_text(" ", strip=True).lower()
-
-        # Apply tiered keyword matching
-        match, t1, t2 = match_keywords(full_text)
-        if not match:
-            continue
-
-        tenders.append({
-            "id": full_url,
-            "title": title,
-            "url": full_url,
-            "tier1": t1,
-            "tier2": t2
-        })
-
-    return tenders
+    return all_results
 
 
 # ------------------------------------------------------
