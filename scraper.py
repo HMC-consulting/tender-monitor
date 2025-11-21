@@ -171,17 +171,24 @@ def scrape_undp_procurement():
 
 
 # ------------------------------------------------------
-# RELIEFWEB — FULL API + FULL-PAGE SCAN
+# RELIEFWEB — API SEARCH + FULL DESCRIPTION SCAN
 # ------------------------------------------------------
 def scrape_reliefweb():
     api_url = "https://api.reliefweb.int/v1/jobs"
 
-    # Step 1 — get up to 30 latest listings
+    # ReliefWeb requires quoted search tokens if they contain spaces
+    quoted_tier1 = [f'"{kw}"' for kw in TIER1_KEYWORDS]
+
     payload = {
-        "query": {"operator": "OR"},
-        "fields": {"include": ["title", "url"]},
-        "sort": ["date.created:desc"],
-        "limit": 30
+        "query": {
+            "value": " OR ".join(quoted_tier1),
+            "operator": "OR",
+            "fields": ["title", "body"]
+        },
+        "fields": {
+            "include": ["title", "url"]
+        },
+        "limit": 100
     }
 
     try:
@@ -197,43 +204,37 @@ def scrape_reliefweb():
     if "data" not in data:
         return []
 
-    urls = []
-    titles = {}
+    tenders = []
 
-    # Extract listing URLs
+    # Step 2 — Scrape full job pages
     for item in data["data"]:
         fields = item.get("fields", {})
         title = fields.get("title", "").strip()
         url = fields.get("url", "").strip()
-        if title and url:
-            urls.append(url)
-            titles[url] = title
 
-    # Step 2 – parallel fetch full pages
-    pages = fetch_many(urls, max_workers=10)
-
-    tenders = []
-
-    for url, html in pages.items():
-        if not html:
+        if not title or not url:
             continue
 
-        soup = BeautifulSoup(html, "html.parser")
+        page_html = fetch(url)
+        if not page_html:
+            continue
+
+        soup = BeautifulSoup(page_html, "html.parser")
 
         body_div = soup.find("div", class_="rw-job__body")
-        text = titles[url].lower()
-        if body_div:
-            text += " " + body_div.get_text(" ", strip=True).lower()
+        full_text = (title + " " + (body_div.get_text(" ", strip=True) if body_div else "")).lower()
 
-        match, t1, t2 = match_keywords(text)
-        if match:
-            tenders.append({
-                "id": url,
-                "title": titles[url],
-                "url": url,
-                "tier1": t1,
-                "tier2": t2
-            })
+        match, t1, t2 = match_keywords(full_text)
+        if not match:
+            continue
+
+        tenders.append({
+            "id": url,
+            "title": title,
+            "url": url,
+            "tier1": t1,
+            "tier2": t2
+        })
 
     return tenders
 
