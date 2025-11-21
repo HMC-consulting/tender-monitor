@@ -4,7 +4,7 @@ import yaml
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 
 from emailer import send_email
 from google.oauth2.credentials import Credentials
@@ -25,15 +25,21 @@ def load_config():
 SEEN_FILE = "seen_tenders.json"
 
 
+def ensure_seen_file():
+    """Make sure seen_tenders.json exists even on first run."""
+    if not os.path.exists(SEEN_FILE):
+        with open(SEEN_FILE, "w") as f:
+            json.dump([], f)
+
+
 def load_seen():
-    if os.path.exists(SEEN_FILE):
-        try:
-            with open(SEEN_FILE, "r") as f:
-                data = json.load(f)
-                return set(data) if isinstance(data, list) else set()
-        except Exception:
-            return set()
-    return set()
+    ensure_seen_file()
+    try:
+        with open(SEEN_FILE, "r") as f:
+            data = json.load(f)
+            return set(data) if isinstance(data, list) else set()
+    except:
+        return set()
 
 
 def save_seen(seen_ids):
@@ -42,7 +48,7 @@ def save_seen(seen_ids):
 
 
 # ------------------------------------------------------
-# Keyword matching (Tier 1 required)
+# Keyword matching
 # ------------------------------------------------------
 def match_keywords(text: str):
     text = text.lower()
@@ -56,7 +62,7 @@ def match_keywords(text: str):
 
 
 # ------------------------------------------------------
-# HTTP helpers
+# Fetch helper
 # ------------------------------------------------------
 def fetch(url: str) -> str | None:
     try:
@@ -64,96 +70,57 @@ def fetch(url: str) -> str | None:
         resp = requests.get(url, headers=headers, timeout=30)
         if resp.status_code == 200:
             return resp.text
-        else:
-            print(f"❌ Fetch {url} returned status {resp.status_code}")
+        print(f"❌ Fetch failed {url}: {resp.status_code}")
     except Exception as e:
         print(f"❌ Error fetching {url}: {e}")
     return None
 
 
 def fetch_many(urls, max_workers=8):
-    """
-    Fetch many URLs in parallel. Returns dict {url: html_or_None}.
-    """
+    """Parallel fetch helper."""
     results = {}
-    unique_urls = list(dict.fromkeys(urls))  # dedupe, preserve order
-
-    def _fetch_one(u):
-        return u, fetch(u)
-
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_url = {executor.submit(_fetch_one, u): u for u in unique_urls}
-        for future in as_completed(future_to_url):
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(fetch, u): u for u in urls}
+        for fut in futures:
+            url = futures[fut]
             try:
-                url, html = future.result()
-                results[url] = html
-            except Exception as e:
-                url = future_to_url[future]
-                print(f"❌ Error in fetch_many for {url}: {e}")
+                results[url] = fut.result()
+            except:
                 results[url] = None
-
     return results
 
 
 # ------------------------------------------------------
-# UNDP CONSULTANCIES — PAGINATED + PARALLEL DETAIL FETCH
+# UNDP CONSULTANCIES
 # ------------------------------------------------------
 def scrape_undp_consultancies():
     base_url = "https://jobs.undp.org"
-    max_pages = 3  # Fast mode
-    jobs = []
+    url = f"{base_url}/cj_view_consultancies.cfm"
 
-    for page in range(1, max_pages + 1):
-        url = f"{base_url}/cj_view_consultancies.cfm?cur_page={page}"
-        html = fetch(url)
-        if not html:
-            break
+    html = fetch(url)
+    if not html:
+        return []
 
-        soup = BeautifulSoup(html, "html.parser")
-        rows = soup.find_all("tr")
-        if not rows:
-            break
-
-        page_found = False
-
-        for row in rows:
-            link = row.find("a", href=True)
-            if not link:
-                continue
-
-            title = link.get_text(strip=True)
-            if not title:
-                continue
-
-            full_url = urljoin(base_url, link["href"])
-            jobs.append({"title": title, "url": full_url})
-            page_found = True
-
-        if not page_found:
-            break
-
-    # Fetch detail pages in parallel
-    url_list = [j["url"] for j in jobs]
-    html_map = fetch_many(url_list, max_workers=8)
-
+    soup = BeautifulSoup(html, "html.parser")
     tenders = []
-    for job in jobs:
-        title = job["title"]
-        url = job["url"]
-        detail_html = html_map.get(url)
-        if not detail_html:
+
+    for row in soup.find_all("tr"):
+        link = row.find("a", href=True)
+        if not link:
             continue
 
-        detail_soup = BeautifulSoup(detail_html, "html.parser")
-        full_text = detail_soup.get_text(" ", strip=True).lower()
-        combined = f"{title.lower()} {full_text}"
+        title = link.get_text(strip=True)
+        if not title:
+            continue
 
-        match, t1, t2 = match_keywords(combined)
+        full_url = urljoin(base_url, link["href"])
+
+        match, t1, t2 = match_keywords(title)
         if match:
             tenders.append({
-                "id": url,
+                "id": full_url,
                 "title": title,
-                "url": url,
+                "url": full_url,
                 "tier1": t1,
                 "tier2": t2
             })
@@ -162,63 +129,107 @@ def scrape_undp_consultancies():
 
 
 # ------------------------------------------------------
-# UNDP PROCUREMENT NOTICES — PAGINATED + PARALLEL DETAIL FETCH
+# UNDP PROCUREMENT (deduped)
 # ------------------------------------------------------
 def scrape_undp_procurement():
     base_url = "https://procurement-notices.undp.org"
-    max_pages = 3  # Fast mode
-    items = []
+    url = base_url + "/"
 
-    for page in range(1, max_pages + 1):
-        url = f"{base_url}/index.cfm?cur_page={page}"
-        html = fetch(url)
-        if not html:
-            break
+    html = fetch(url)
+    if not html:
+        return []
 
-        soup = BeautifulSoup(html, "html.parser")
-        links = soup.find_all("a", href=True)
-        if not links:
-            break
-
-        page_found = False
-
-        for link in links:
-            href = link["href"]
-            if "view_notice" not in href and "view_negotiation" not in href:
-                continue
-
-            title = link.get_text(strip=True)
-            if not title:
-                continue
-
-            full_url = urljoin(base_url, href)
-            items.append({"title": title, "url": full_url})
-            page_found = True
-
-        if not page_found:
-            break
-
-    # Fetch detail pages in parallel
-    url_list = [i["url"] for i in items]
-    html_map = fetch_many(url_list, max_workers=8)
-
+    soup = BeautifulSoup(html, "html.parser")
     tenders = []
-    for item in items:
-        title = item["title"]
-        url = item["url"]
-        detail_html = html_map.get(url)
-        if not detail_html:
+    seen_urls = set()
+
+    for link in soup.find_all("a", href=True):
+        href = link["href"]
+        if "view_notice" not in href and "view_negotiation" not in href:
             continue
 
-        detail_soup = BeautifulSoup(detail_html, "html.parser")
-        full_text = detail_soup.get_text(" ", strip=True).lower()
-        combined = f"{title.lower()} {full_text}"
+        full_url = urljoin(base_url, href)
+        if full_url in seen_urls:
+            continue
+        seen_urls.add(full_url)
 
-        match, t1, t2 = match_keywords(combined)
+        title = link.get_text(strip=True)
+        if not title or len(title) < 3:
+            continue
+
+        match, t1, t2 = match_keywords(title)
+        if match:
+            tenders.append({
+                "id": full_url,
+                "title": title,
+                "url": full_url,
+                "tier1": t1,
+                "tier2": t2
+            })
+
+    return tenders
+
+
+# ------------------------------------------------------
+# RELIEFWEB — FULL API + FULL-PAGE SCAN
+# ------------------------------------------------------
+def scrape_reliefweb():
+    api_url = "https://api.reliefweb.int/v1/jobs"
+
+    # Step 1 — get up to 30 latest listings
+    payload = {
+        "query": {"operator": "OR"},
+        "fields": {"include": ["title", "url"]},
+        "sort": ["date.created:desc"],
+        "limit": 30
+    }
+
+    try:
+        resp = requests.post(api_url, json=payload, timeout=30)
+        if resp.status_code != 200:
+            print(f"❌ ReliefWeb API returned {resp.status_code}")
+            return []
+    except Exception as e:
+        print(f"❌ ReliefWeb API error: {e}")
+        return []
+
+    data = resp.json()
+    if "data" not in data:
+        return []
+
+    urls = []
+    titles = {}
+
+    # Extract listing URLs
+    for item in data["data"]:
+        fields = item.get("fields", {})
+        title = fields.get("title", "").strip()
+        url = fields.get("url", "").strip()
+        if title and url:
+            urls.append(url)
+            titles[url] = title
+
+    # Step 2 – parallel fetch full pages
+    pages = fetch_many(urls, max_workers=10)
+
+    tenders = []
+
+    for url, html in pages.items():
+        if not html:
+            continue
+
+        soup = BeautifulSoup(html, "html.parser")
+
+        body_div = soup.find("div", class_="rw-job__body")
+        text = titles[url].lower()
+        if body_div:
+            text += " " + body_div.get_text(" ", strip=True).lower()
+
+        match, t1, t2 = match_keywords(text)
         if match:
             tenders.append({
                 "id": url,
-                "title": title,
+                "title": titles[url],
                 "url": url,
                 "tier1": t1,
                 "tier2": t2
@@ -228,236 +239,99 @@ def scrape_undp_procurement():
 
 
 # ------------------------------------------------------
-# RELIEFWEB — HTML LISTING + FULL DETAIL PAGES (LIMITED PAGES)
-# ------------------------------------------------------
-def scrape_reliefweb():
-    base_url = "https://reliefweb.int"
-    max_pages = 3  # Fast mode
-    jobs = []
-
-    # ReliefWeb paginates as /jobs, /jobs?page=1, /jobs?page=2, etc.
-    for page in range(0, max_pages):
-        if page == 0:
-            url = f"{base_url}/jobs"
-        else:
-            url = f"{base_url}/jobs?page={page}"
-
-        html = fetch(url)
-        if not html:
-            break
-
-        soup = BeautifulSoup(html, "html.parser")
-        links = soup.select("a.rw-river-article__title-link")
-        if not links:
-            break
-
-        page_found = False
-
-        for link in links:
-            title = link.get_text(strip=True)
-            href = link.get("href")
-            if not title or not href:
-                continue
-
-            full_url = urljoin(base_url, href)
-            jobs.append({"title": title, "url": full_url})
-            page_found = True
-
-        if not page_found:
-            break
-
-    # Fetch job pages in parallel
-    url_list = [j["url"] for j in jobs]
-    html_map = fetch_many(url_list, max_workers=8)
-
-    tenders = []
-    for job in jobs:
-        title = job["title"]
-        url = job["url"]
-        page_html = html_map.get(url)
-        if not page_html:
-            continue
-
-        page_soup = BeautifulSoup(page_html, "html.parser")
-
-        # Try several possible containers for job body
-        body_container = (
-            page_soup.select_one("div.rw-job__body")
-            or page_soup.select_one("div.rw-article__content")
-            or page_soup.select_one("section.rw-article__body")
-        )
-
-        full_text = title.lower()
-        if body_container:
-            full_text += " " + body_container.get_text(" ", strip=True).lower()
-        else:
-            full_text += " " + page_soup.get_text(" ", strip=True).lower()
-
-        match, t1, t2 = match_keywords(full_text)
-        if not match:
-            continue
-
-        tenders.append({
-            "id": url,
-            "title": title,
-            "url": url,
-            "tier1": t1,
-            "tier2": t2
-        })
-
-    return tenders
-
-
-# ------------------------------------------------------
-# WORLD BANK — PAGINATION LIMITED + PARALLEL DETAIL FETCH
+# WORLD BANK — unchanged, but we can improve later
 # ------------------------------------------------------
 def scrape_world_bank():
-    """
-    World Bank eProcure — best-effort HTML scraper.
-    JavaScript-heavy, so we cap to a few pages for speed.
-    """
     base_url = "https://wbgeprocure-rfxnow.worldbank.org"
-    max_pages = 3  # Fast mode
-    items = []
+    url = f"{base_url}/rfxnow/public/advertisement/index.html"
 
-    for page in range(1, max_pages + 1):
-        url = f"{base_url}/rfxnow/public/advertisement/index.html?page={page}"
-        html = fetch(url)
-        if not html:
-            break
+    html = fetch(url)
+    if not html:
+        return []
 
-        soup = BeautifulSoup(html, "html.parser")
-        rows = soup.find_all("tr")
-        if not rows:
-            break
-
-        page_found = False
-
-        for row in rows:
-            link = row.find("a", href=True)
-            if not link:
-                continue
-
-            title = link.get_text(strip=True)
-            if not title or len(title) < 3:
-                continue
-
-            href = link["href"]
-            full_url = urljoin(base_url, href)
-
-            items.append({"title": title, "url": full_url})
-            page_found = True
-
-        if not page_found:
-            break
-
-    # Fetch detail pages in parallel
-    url_list = [i["url"] for i in items]
-    html_map = fetch_many(url_list, max_workers=6)
-
+    soup = BeautifulSoup(html, "html.parser")
     tenders = []
-    for item in items:
-        title = item["title"]
-        url = item["url"]
-        detail_html = html_map.get(url)
-        if not detail_html:
+    seen_urls = set()
+
+    for row in soup.find_all("tr"):
+        link = row.find("a", href=True)
+        if not link:
             continue
 
-        detail_soup = BeautifulSoup(detail_html, "html.parser")
-        text_block = detail_soup.get_text(" ", strip=True).lower()
-        combined = f"{title.lower()} {text_block}"
+        title = link.get_text(strip=True)
+        full_url = urljoin(base_url, link["href"])
 
-        match, t1, t2 = match_keywords(combined)
-        if not match:
+        if full_url in seen_urls:
             continue
+        seen_urls.add(full_url)
 
-        tenders.append({
-            "id": url,
-            "title": title,
-            "url": url,
-            "tier1": t1,
-            "tier2": t2
-        })
+        match, t1, t2 = match_keywords(title)
+        if match:
+            tenders.append({
+                "id": full_url,
+                "title": title,
+                "url": full_url,
+                "tier1": t1,
+                "tier2": t2
+            })
 
     return tenders
 
 
 # ------------------------------------------------------
-# Build Email (HTML + Text versions)
+# Email builder
 # ------------------------------------------------------
-def build_email_bodies(tenders_with_source):
-    # Plain text
-    if not tenders_with_source:
-        body_text = "No NEW marine/ocean-related tenders found today."
-    else:
-        lines = ["NEW Marine / Ocean Opportunities\n"]
-        current_source = None
-        for source, t in tenders_with_source:
-            if source != current_source:
-                lines.append(f"\n{source}")
-                lines.append("-" * len(source))
-                current_source = source
+def build_email_bodies(items):
+    if not items:
+        return (
+            "<html><body><h2>No NEW marine/ocean-related tenders found today.</h2></body></html>",
+            "No NEW marine/ocean-related tenders found today."
+        )
 
-            lines.append(f"- {t['title']}")
-            lines.append(f"  {t['url']}")
-            if t["tier1"]:
-                lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
-            if t["tier2"]:
-                lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
-        body_text = "\n".join(lines)
+    # Text version
+    text_lines = ["NEW Marine / Ocean Opportunities\n"]
+    current_source = None
 
-    # HTML
-    if not tenders_with_source:
-        body_html = """
-        <html><body>
-        <h2 style="color:#004080;">No NEW marine/ocean-related tenders found today.</h2>
-        </body></html>
-        """
-        return body_html, body_text
+    for source, t in items:
+        if source != current_source:
+            text_lines.append(f"\n{source}")
+            text_lines.append("-" * len(source))
+            current_source = source
 
+        text_lines.append(f"- {t['title']}")
+        text_lines.append(f"  {t['url']}")
+        if t['tier1']:
+            text_lines.append(f"  Tier 1: {', '.join(t['tier1'])}")
+        if t['tier2']:
+            text_lines.append(f"  Tier 2: {', '.join(t['tier2'])}")
+
+    body_text = "\n".join(text_lines)
+
+    # HTML version
     html = []
     html.append("""
-    <html>
-    <body style="font-family:Arial, sans-serif; font-size:14px; color:#333;">
-    <h2 style="color:#004080; margin-bottom:20px;">
-        🌊 New Marine / Ocean Opportunities
-    </h2>
+    <html><body style="font-family:Arial, sans-serif; font-size:14px;">
+    <h2 style="color:#004080;">🌊 New Marine / Ocean Opportunities</h2>
     """)
 
     current_source = None
-    for source, t in tenders_with_source:
+
+    for source, t in items:
         if source != current_source:
-            html.append(f"""
-            <h3 style="color:#0066aa; margin-top:30px; margin-bottom:5px;">
-                {source}
-            </h3>
-            <hr style="border:0; border-top:1px solid #ccc; margin-bottom:20px;">
-            """)
+            html.append(f"<h3 style='margin-top:25px;color:#0066aa;'>{source}</h3><hr>")
             current_source = source
 
         html.append(f"""
-            <div style="margin-bottom:25px;">
-                <div style="font-size:15px; font-weight:bold; margin-bottom:6px;">
-                    {t['title']}
-                </div>
-                <div style="margin-bottom:6px;">
-                    <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a>
-                </div>
+        <div style="margin-bottom:20px;">
+            <strong>{t['title']}</strong><br>
+            <a href="{t['url']}" style="color:#1a73e8;">View Opportunity</a><br>
         """)
 
-        if t["tier1"]:
-            html.append(f"""
-                <div style="font-size:12px; color:#006600; margin-bottom:4px;">
-                    <strong>Tier 1:</strong> {', '.join(t['tier1'])}
-                </div>
-            """)
+        if t['tier1']:
+            html.append(f"<div style='font-size:12px;color:#006600;'>Tier 1: {', '.join(t['tier1'])}</div>")
 
-        if t["tier2"]:
-            html.append(f"""
-                <div style="font-size:12px; color:#444;">
-                    <strong>Tier 2:</strong> {', '.join(t['tier2'])}
-                </div>
-            """)
+        if t['tier2']:
+            html.append(f"<div style='font-size:12px;color:#555;'>Tier 2: {', '.join(t['tier2'])}</div>")
 
         html.append("</div>")
 
@@ -474,29 +348,30 @@ def main():
     config = load_config()
     email_to = config["email_to"]
 
+    ensure_seen_file()
     seen = load_seen()
-    updated_seen = set(seen)
+    updated = set(seen)
+
     new_items = []
 
     sources = [
         ("UNDP Consultancies", scrape_undp_consultancies),
         ("UNDP Procurement Notices", scrape_undp_procurement),
         ("ReliefWeb", scrape_reliefweb),
-        ("World Bank eProcure", scrape_world_bank),
+        ("World Bank eProcure", scrape_world_bank)
     ]
 
-    # Run scrapers sequentially (each one uses parallel detail fetching)
-    for source_name, func in sources:
+    for name, func in sources:
         try:
             tenders = func()
         except Exception as e:
-            print(f"❌ Error scraping {source_name}: {e}")
+            print(f"❌ Error scraping {name}: {e}")
             continue
 
         for t in tenders:
-            if t["id"] not in seen:
-                new_items.append((source_name, t))
-                updated_seen.add(t["id"])
+            if t["id"] not in updated:
+                new_items.append((name, t))
+                updated.add(t["id"])
 
     body_html, body_text = build_email_bodies(new_items)
 
@@ -507,10 +382,10 @@ def main():
         body_html=body_html,
         body_text=body_text,
         creds=creds,
-        email_to=email_to,
+        email_to=email_to
     )
 
-    save_seen(updated_seen)
+    save_seen(updated)
 
 
 if __name__ == "__main__":
